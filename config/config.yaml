@@ -1,0 +1,29 @@
+database:
+  host: localhost
+  port: 5432
+  dbname: analyticschronicles
+  user: postgres
+  password: OmniC123
+
+qdrant:
+  url: http://localhost:6333
+  collection: visitor_embeddings_office
+
+photos:
+  directory: photos
+
+# Frontal face filter settings (MediaPipe)
+face_filter:
+  enabled: true
+  # Yaw thresholds: face is frontal if yaw is between these values
+  # Positive = looking right, Negative = looking left
+  # More relaxed values = more faces pass through
+  yaw_max: 0.25        # Max yaw to right (default 0.25 = ~25% turn)
+  yaw_min: -0.25       # Max yaw to left
+  # Pitch thresholds (optional, not strictly enforced for now)
+  pitch_max: 0.30      # Max pitch up
+  pitch_min: -0.30     # Max pitch down
+  # Detection confidence
+  min_detection_confidence: 0.25
+  # Blur threshold (Laplacian variance - higher = sharper)
+  blur_min: 3.0

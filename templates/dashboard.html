@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Visitor Embeddings Dashboard</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e27;
+            --bg-secondary: #121837;
+            --bg-card: #1a1f4e;
+            --bg-hover: #252b6a;
+            --accent-orange: #ff6b35;
+            --accent-purple: #a855f7;
+            --accent-blue: #3b82f6;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --border-color: #2d3a8c;
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }
+
+        .header { background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-card) 100%); padding: 30px; text-align: center; border-bottom: 2px solid var(--accent-purple); }
+        .header h1 { color: var(--accent-orange); font-size: 2rem; font-weight: 700; margin-bottom: 8px; }
+        .header p { color: var(--text-secondary); font-weight: 300; }
+
+        .controls { background: var(--bg-secondary); padding: 20px; display: flex; justify-content: center; gap: 25px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); }
+        .controls button { padding: 10px 24px; border-radius: 8px; border: none; background: linear-gradient(135deg, var(--accent-orange), #ff8c42); color: white; cursor: pointer; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
+        .controls button:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(255, 107, 53, 0.4); }
+        .controls button:disabled { opacity: 0.6; cursor: wait; }
+        .cluster-stats { display: flex; gap: 15px; align-items: center; background: var(--bg-card); padding: 10px 20px; border-radius: 10px; border: 1px solid var(--border-color); }
+        .stat-label { color: var(--text-secondary); font-size: 14px; }
+        .stat-value { color: var(--accent-purple); font-weight: 700; font-size: 18px; }
+
+        .container { max-width: 1500px; margin: 0 auto; padding: 30px; }
+
+        .visitor-card { background: var(--bg-card); border-radius: 16px; margin-bottom: 24px; overflow: hidden; border: 1px solid var(--border-color); transition: border-color 0.3s; }
+        .visitor-card:hover { border-color: var(--accent-purple); }
+
+        .visitor-header { display: flex; align-items: center; padding: 20px; background: linear-gradient(135deg, var(--bg-secondary), var(--bg-card)); cursor: pointer; transition: background 0.3s; }
+        .visitor-header:hover { background: var(--bg-hover); }
+
+        .visitor-avatar { width: 70px; height: 70px; border-radius: 50%; object-fit: cover; margin-right: 20px; border: 3px solid var(--accent-orange); box-shadow: 0 0 20px rgba(255, 107, 53, 0.3); }
+        .visitor-avatar-placeholder { width: 70px; height: 70px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; margin-right: 20px; font-size: 28px; border: 3px solid var(--border-color); }
+
+        .visitor-info h3 { color: var(--accent-orange); margin-bottom: 6px; font-size: 1.2rem; font-weight: 600; }
+        .visitor-info span { color: var(--text-secondary); font-size: 14px; }
+
+        .badge { background: linear-gradient(135deg, var(--accent-purple), #c084fc); color: white; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-left: auto; }
+        .expand-icon { margin-left: 15px; transition: transform 0.3s; color: var(--text-secondary); font-size: 12px; }
+        .expanded .expand-icon { transform: rotate(180deg); }
+
+        .similar-section { display: none; padding: 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color); }
+        .similar-section.show { display: block; }
+
+        .action-bar { display: flex; gap: 15px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
+        .action-bar button { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; transition: all 0.2s; }
+        .btn-ignore { background: linear-gradient(135deg, #ef4444, #f87171); color: white; }
+        .btn-ignore:hover { box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); }
+        .btn-ignore:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-select-all { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-color) !important; }
+        .btn-select-all:hover { background: var(--bg-hover); }
+        .selected-count { color: var(--accent-purple); font-weight: 500; }
+
+        .similar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 15px; max-height: 500px; overflow-y: auto; padding-right: 10px; }
+        .similar-grid::-webkit-scrollbar { width: 8px; }
+        .similar-grid::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: 4px; }
+        .similar-grid::-webkit-scrollbar-thumb { background: var(--accent-purple); border-radius: 4px; }
+
+        .similar-item { text-align: center; position: relative; }
+        .similar-item input[type="checkbox"] { position: absolute; top: 8px; left: 8px; width: 20px; height: 20px; accent-color: var(--accent-orange); cursor: pointer; z-index: 10; }
+        .similar-item label { display: block; cursor: pointer; }
+        .similar-item img { width: 100%; height: 120px; object-fit: cover; border-radius: 10px; border: 3px solid transparent; transition: all 0.2s; }
+        .similar-item img:hover { border-color: var(--accent-blue); transform: scale(1.02); }
+        .similar-item.selected img { border-color: var(--accent-orange); box-shadow: 0 0 15px rgba(255, 107, 53, 0.5); }
+        .similar-item-placeholder { width: 100%; height: 120px; background: var(--bg-secondary); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 12px; }
+        .similar-item span { font-size: 12px; color: var(--text-secondary); display: block; margin-top: 8px; }
+
+        .similar-item.protected img { border-color: #fbbf24; opacity: 0.6; }
+        .similar-item.protected::after { content: '🔒'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; }
+
+        .toast { position: fixed; bottom: 30px; right: 30px; background: var(--bg-card); color: var(--text-primary); padding: 16px 24px; border-radius: 10px; border: 1px solid var(--accent-purple); box-shadow: 0 10px 40px rgba(0,0,0,0.4); display: none; z-index: 1000; }
+        .toast.show { display: block; animation: slideIn 0.3s ease; }
+        .toast.success { border-color: #22c55e; }
+        .toast.error { border-color: #ef4444; }
+        .toast.warning { border-color: #fbbf24; }
+        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>👤 Visitor Embeddings Dashboard</h1>
+        <p>View visitors and manage face clusters using K-Means</p>
+    </div>
+
+    <div class="controls">
+        <div class="cluster-stats">
+            <span class="stat-label">Clusters:</span>
+            <span class="stat-value">{{ cluster_info.n_clusters }}</span>
+            <span class="stat-label">Total Points:</span>
+            <span class="stat-value">{{ cluster_info.total_points }}</span>
+        </div>
+        <button onclick="refreshClusters()" id="refresh-btn">🔄 Re-cluster</button>
+    </div>
+
+    <div class="container">
+        {% for visitor in visitors %}
+        <div class="visitor-card" data-visitor-id="{{ visitor.object_id }}">
+            <div class="visitor-header" onclick="toggleSimilar(this)">
+                {% if visitor.main_image %}
+                <img src="{{ visitor.main_image }}" alt="{{ visitor.name }}" class="visitor-avatar" onerror="this.style.display='none'">
+                {% else %}
+                <div class="visitor-avatar-placeholder">👤</div>
+                {% endif %}
+                <div class="visitor-info">
+                    <h3>{{ visitor.name }}</h3>
+                    <span>Object ID: {{ visitor.object_id }}</span>
+                </div>
+                <div class="badge">{{ visitor.similar_count }} similar</div>
+                <span class="expand-icon">▼</span>
+            </div>
+            <div class="similar-section">
+                <div class="action-bar">
+                    <button class="btn-select-all" onclick="toggleSelectAll(this, {{ visitor.object_id }})">Select All</button>
+                    <button class="btn-ignore" onclick="ignoreSelected({{ visitor.object_id }})" disabled>Mark as Ignored</button>
+                    <span class="selected-count" id="count-{{ visitor.object_id }}">0 selected</span>
+                </div>
+                <div class="similar-grid" id="grid-{{ visitor.object_id }}">
+                    {% for img in visitor.similar_images %}
+                    <div class="similar-item" data-id="{{ img.id }}">
+                        <input type="checkbox" id="cb-{{ visitor.object_id }}-{{ img.id }}" onchange="updateSelection({{ visitor.object_id }})">
+                        <label for="cb-{{ visitor.object_id }}-{{ img.id }}">
+                            {% if img.path %}
+                            <img src="{{ img.path }}" alt="Point {{ img.id }}" loading="lazy" onerror="this.outerHTML='<div class=similar-item-placeholder>No img</div>'">
+                            {% else %}
+                            <div class="similar-item-placeholder">No image</div>
+                            {% endif %}
+                        </label>
+                        <span>ID: {{ img.id }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <script>
+        document.getElementById('threshold').oninput = function() {
+            document.getElementById('threshold-value').textContent = this.value;
+        };
+
+        async function refreshClusters() {
+            const btn = document.getElementById('refresh-btn');
+            btn.disabled = true;
+            btn.textContent = '⏳ Clustering...';
+
+            try {
+                const response = await fetch('/api/refresh-clusters', { method: 'POST' });
+                const result = await response.json();
+                showToast(`Re-clustered into ${result.n_clusters} clusters`, 'success');
+                setTimeout(() => window.location.reload(), 1000);
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+                btn.disabled = false;
+                btn.textContent = '🔄 Re-cluster';
+            }
+        }
+
+        function toggleSimilar(header) {
+            const section = header.nextElementSibling;
+            section.classList.toggle('show');
+            header.classList.toggle('expanded');
+        }
+
+        function updateSelection(visitorId) {
+            const grid = document.getElementById('grid-' + visitorId);
+            const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
+            const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
+            const count = checked.length;
+
+            document.getElementById('count-' + visitorId).textContent = count + ' selected';
+
+            const ignoreBtn = grid.parentElement.querySelector('.btn-ignore');
+            ignoreBtn.disabled = count === 0;
+
+            // Update visual selection state
+            checkboxes.forEach(cb => {
+                cb.closest('.similar-item').classList.toggle('selected', cb.checked);
+            });
+        }
+
+        function toggleSelectAll(btn, visitorId) {
+            const grid = document.getElementById('grid-' + visitorId);
+            const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
+            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+
+            checkboxes.forEach(cb => cb.checked = !allChecked);
+            btn.textContent = allChecked ? 'Select All' : 'Deselect All';
+            updateSelection(visitorId);
+        }
+
+        async function ignoreSelected(visitorId) {
+            const grid = document.getElementById('grid-' + visitorId);
+            const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
+            const ids = Array.from(checked).map(cb => parseInt(cb.closest('.similar-item').dataset.id));
+
+            if (ids.length === 0) return;
+
+            try {
+                const response = await fetch('/api/ignore', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ object_ids: ids })
+                });
+
+                const result = await response.json();
+
+                if (result.success) {
+                    // Build message based on what happened
+                    let message = result.message || `Marked ${result.updated} items as ignored`;
+                    let toastType = 'success';
+
+                    if (result.skipped && result.skipped.length > 0) {
+                        toastType = 'warning';
+                    }
+
+                    showToast(message, toastType);
+
+                    // Remove only the items that were actually ignored (not skipped)
+                    const skippedSet = new Set(result.skipped || []);
+                    checked.forEach(cb => {
+                        const itemId = parseInt(cb.closest('.similar-item').dataset.id);
+                        if (!skippedSet.has(itemId)) {
+                            cb.closest('.similar-item').remove();
+                        } else {
+                            // Uncheck skipped items and mark them visually
+                            cb.checked = false;
+                            cb.closest('.similar-item').classList.remove('selected');
+                            cb.closest('.similar-item').classList.add('protected');
+                        }
+                    });
+                    updateSelection(visitorId);
+                } else {
+                    showToast('Error: ' + result.error, 'error');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        }
+
+        function showToast(message, type) {
+            const toast = document.getElementById('toast');
+            toast.textContent = message;
+            toast.className = 'toast show ' + type;
+            setTimeout(() => toast.classList.remove('show'), 3000);
+        }
+    </script>
+</body>
+</html>
+
