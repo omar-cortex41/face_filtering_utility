@@ -3,160 +3,324 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Visitor Embeddings Dashboard</title>
+    <title>Visitor Face Clustering Utility</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
-            --bg-primary: #0a0e27;
-            --bg-secondary: #121837;
-            --bg-card: #1a1f4e;
-            --bg-hover: #252b6a;
-            --accent-orange: #ff6b35;
-            --accent-purple: #a855f7;
-            --accent-blue: #3b82f6;
-            --text-primary: #f1f5f9;
-            --text-secondary: #94a3b8;
-            --border-color: #2d3a8c;
+            --bg-primary: #0d1117;
+            --bg-sidebar: #161b22;
+            --bg-card: #1c2128;
+            --bg-card-hover: #252c35;
+            --bg-modal: #1c2128;
+            --accent-blue: #2d7ff9;
+            --accent-teal: #10b981;
+            --text-primary: #e6edf3;
+            --text-secondary: #7d8590;
+            --border-color: #30363d;
         }
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; }
+        body { font-family: 'Inter', sans-serif; background: var(--bg-primary); color: var(--text-primary); min-height: 100vh; display: flex; }
 
-        .header { background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-card) 100%); padding: 30px; text-align: center; border-bottom: 2px solid var(--accent-purple); }
-        .header h1 { color: var(--accent-orange); font-size: 2rem; font-weight: 700; margin-bottom: 8px; }
-        .header p { color: var(--text-secondary); font-weight: 300; }
+        /* Sidebar */
+        .sidebar { width: 200px; background: var(--bg-sidebar); border-right: 1px solid var(--border-color); display: flex; flex-direction: column; position: fixed; height: 100vh; }
+        .sidebar-logo { padding: 20px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border-color); }
+        .sidebar-logo svg { width: 28px; height: 28px; color: var(--accent-blue); }
+        .sidebar-logo span { font-weight: 600; font-size: 15px; }
+        .sidebar-nav { flex: 1; padding: 10px 0; }
+        .nav-item { display: flex; align-items: center; gap: 12px; padding: 12px 20px; color: var(--text-secondary); cursor: pointer; transition: all 0.2s; font-size: 14px; }
+        .nav-item:hover { background: var(--bg-card); color: var(--text-primary); }
+        .nav-item.active { background: var(--accent-blue); color: white; }
+        .nav-item svg { width: 18px; height: 18px; }
 
-        .controls { background: var(--bg-secondary); padding: 20px; display: flex; justify-content: center; gap: 25px; align-items: center; flex-wrap: wrap; border-bottom: 1px solid var(--border-color); }
-        .controls button { padding: 10px 24px; border-radius: 8px; border: none; background: linear-gradient(135deg, var(--accent-orange), #ff8c42); color: white; cursor: pointer; font-weight: 600; transition: transform 0.2s, box-shadow 0.2s; }
-        .controls button:hover { transform: translateY(-2px); box-shadow: 0 4px 20px rgba(255, 107, 53, 0.4); }
-        .controls button:disabled { opacity: 0.6; cursor: wait; }
-        .cluster-stats { display: flex; gap: 15px; align-items: center; background: var(--bg-card); padding: 10px 20px; border-radius: 10px; border: 1px solid var(--border-color); }
-        .stat-label { color: var(--text-secondary); font-size: 14px; }
-        .stat-value { color: var(--accent-purple); font-weight: 700; font-size: 18px; }
+        /* Main content */
+        .main-content { flex: 1; margin-left: 200px; display: flex; flex-direction: column; }
 
-        .container { max-width: 1500px; margin: 0 auto; padding: 30px; }
+        /* Top header */
+        .top-header { background: var(--bg-sidebar); padding: 16px 24px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-color); }
+        .top-header h1 { font-size: 18px; font-weight: 600; }
+        .header-actions { display: flex; align-items: center; gap: 16px; }
+        .header-icon { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: background 0.2s; }
+        .header-icon:hover { background: var(--bg-card); }
+        .header-icon svg { width: 20px; height: 20px; color: var(--text-secondary); }
 
-        .visitor-card { background: var(--bg-card); border-radius: 16px; margin-bottom: 24px; overflow: hidden; border: 1px solid var(--border-color); transition: border-color 0.3s; }
-        .visitor-card:hover { border-color: var(--accent-purple); }
+        /* Controls bar */
+        .controls-bar { background: var(--bg-sidebar); padding: 12px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid var(--border-color); }
+        .controls-bar .label { color: var(--text-secondary); font-size: 13px; }
+        .dropdown { background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 8px 12px; color: var(--text-primary); font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; }
+        .dropdown:hover { border-color: var(--accent-blue); }
+        .dropdown svg { width: 14px; height: 14px; color: var(--text-secondary); }
+        .cluster-stats { margin-left: auto; display: flex; gap: 20px; align-items: center; font-size: 13px; }
+        .stat { display: flex; align-items: center; gap: 6px; }
+        .stat-label { color: var(--text-secondary); }
+        .stat-value { color: var(--accent-blue); font-weight: 600; }
+        .btn-recluster { background: var(--accent-blue); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.2s; }
+        .btn-recluster:hover { opacity: 0.9; }
+        .btn-recluster:disabled { opacity: 0.5; cursor: wait; }
 
-        .visitor-header { display: flex; align-items: center; padding: 20px; background: linear-gradient(135deg, var(--bg-secondary), var(--bg-card)); cursor: pointer; transition: background 0.3s; }
-        .visitor-header:hover { background: var(--bg-hover); }
+        /* Clusters grid */
+        .clusters-container { flex: 1; padding: 24px; overflow-y: auto; }
+        .clusters-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
 
-        .visitor-avatar { width: 70px; height: 70px; border-radius: 50%; object-fit: cover; margin-right: 20px; border: 3px solid var(--accent-orange); box-shadow: 0 0 20px rgba(255, 107, 53, 0.3); }
-        .visitor-avatar-placeholder { width: 70px; height: 70px; border-radius: 50%; background: var(--bg-hover); display: flex; align-items: center; justify-content: center; margin-right: 20px; font-size: 28px; border: 3px solid var(--border-color); }
+        /* Cluster card */
+        .cluster-card { background: var(--bg-card); border-radius: 12px; overflow: hidden; border: 1px solid var(--border-color); transition: border-color 0.2s; cursor: pointer; }
+        .cluster-card:hover { border-color: var(--accent-blue); }
+        .cluster-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-sidebar); }
+        .cluster-name { font-size: 14px; font-weight: 500; }
+        .cluster-menu { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; }
+        .cluster-menu:hover { background: var(--bg-card); }
+        .cluster-menu svg { width: 16px; height: 16px; color: var(--text-secondary); }
+        .cluster-faces { display: flex; gap: 8px; padding: 12px; overflow-x: auto; }
+        .cluster-faces::-webkit-scrollbar { height: 6px; }
+        .cluster-faces::-webkit-scrollbar-track { background: var(--bg-sidebar); border-radius: 3px; }
+        .cluster-faces::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 3px; }
+        .face-thumb { width: 70px; height: 70px; border-radius: 8px; object-fit: cover; flex-shrink: 0; border: 2px solid transparent; transition: border-color 0.2s; }
+        .face-thumb:hover { border-color: var(--accent-blue); }
+        .face-thumb.main { border-color: var(--accent-teal); }
+        .face-placeholder { width: 70px; height: 70px; border-radius: 8px; background: var(--bg-sidebar); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 11px; flex-shrink: 0; }
+        .more-faces { width: 70px; height: 70px; border-radius: 8px; background: var(--bg-sidebar); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 13px; font-weight: 500; flex-shrink: 0; }
 
-        .visitor-info h3 { color: var(--accent-orange); margin-bottom: 6px; font-size: 1.2rem; font-weight: 600; }
-        .visitor-info span { color: var(--text-secondary); font-size: 14px; }
-
-        .badge { background: linear-gradient(135deg, var(--accent-purple), #c084fc); color: white; padding: 6px 16px; border-radius: 20px; font-size: 13px; font-weight: 600; margin-left: auto; }
-        .expand-icon { margin-left: 15px; transition: transform 0.3s; color: var(--text-secondary); font-size: 12px; }
-        .expanded .expand-icon { transform: rotate(180deg); }
-
-        .similar-section { display: none; padding: 20px; background: var(--bg-primary); border-top: 1px solid var(--border-color); }
-        .similar-section.show { display: block; }
-
-        .action-bar { display: flex; gap: 15px; margin-bottom: 20px; align-items: center; flex-wrap: wrap; }
-        .action-bar button { padding: 10px 20px; border-radius: 8px; border: none; cursor: pointer; font-weight: 600; transition: all 0.2s; }
-        .btn-ignore { background: linear-gradient(135deg, #ef4444, #f87171); color: white; }
-        .btn-ignore:hover { box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4); }
+        /* Modal overlay */
+        .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; }
+        .modal-overlay.show { display: flex; }
+        .modal { background: var(--bg-modal); border-radius: 12px; width: 90%; max-width: 560px; max-height: 80vh; overflow: hidden; border: 1px solid var(--border-color); animation: modalIn 0.2s ease; }
+        @keyframes modalIn { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: scale(1); } }
+        .modal-header { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border-color); }
+        .modal-header h2 { font-size: 16px; font-weight: 600; }
+        .modal-close { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 6px; transition: background 0.2s; }
+        .modal-close:hover { background: var(--bg-card-hover); }
+        .modal-close svg { width: 18px; height: 18px; color: var(--text-secondary); }
+        .modal-body { padding: 20px; max-height: 400px; overflow-y: auto; }
+        .modal-section { margin-bottom: 20px; }
+        .modal-section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .modal-faces { display: flex; flex-wrap: wrap; gap: 10px; }
+        .modal-face { position: relative; }
+        .modal-face img { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; border: 3px solid transparent; cursor: pointer; transition: all 0.2s; }
+        .modal-face img:hover { border-color: var(--accent-blue); }
+        .modal-face.selected img { border-color: var(--accent-teal); }
+        .modal-face .check { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; background: var(--accent-teal); border-radius: 50%; display: none; align-items: center; justify-content: center; }
+        .modal-face.selected .check { display: flex; }
+        .modal-face .check svg { width: 14px; height: 14px; color: white; }
+        .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border-color); }
+        .btn-combine { width: 100%; background: var(--accent-blue); color: white; border: none; padding: 12px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
+        .btn-combine:hover { opacity: 0.9; }
+        .btn-combine:disabled { opacity: 0.5; cursor: not-allowed; }
+        .modal-actions { display: flex; gap: 10px; margin-top: 16px; }
+        .btn-action { flex: 1; padding: 10px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; border: none; transition: all 0.2s; }
+        .btn-ignore { background: #dc2626; color: white; }
+        .btn-ignore:hover { background: #ef4444; }
         .btn-ignore:disabled { opacity: 0.5; cursor: not-allowed; }
-        .btn-select-all { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-color) !important; }
-        .btn-select-all:hover { background: var(--bg-hover); }
-        .selected-count { color: var(--accent-purple); font-weight: 500; }
+        .btn-gold { background: #f59e0b; color: #1a1a2e; }
+        .btn-gold:hover { background: #fbbf24; }
 
-        .similar-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 15px; max-height: 500px; overflow-y: auto; padding-right: 10px; }
-        .similar-grid::-webkit-scrollbar { width: 8px; }
-        .similar-grid::-webkit-scrollbar-track { background: var(--bg-secondary); border-radius: 4px; }
-        .similar-grid::-webkit-scrollbar-thumb { background: var(--accent-purple); border-radius: 4px; }
+        /* Toast */
+        .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-card); color: var(--text-primary); padding: 14px 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: none; z-index: 1100; font-size: 14px; }
+        .toast.show { display: block; animation: toastIn 0.3s ease; }
+        .toast.success { border-color: var(--accent-teal); }
+        .toast.error { border-color: #dc2626; }
+        .toast.warning { border-color: #f59e0b; }
+        @keyframes toastIn { from { transform: translateY(20px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 
-        .similar-item { text-align: center; position: relative; }
-        .similar-item input[type="checkbox"] { position: absolute; top: 8px; left: 8px; width: 20px; height: 20px; accent-color: var(--accent-orange); cursor: pointer; z-index: 10; }
-        .similar-item label { display: block; cursor: pointer; }
-        .similar-item img { width: 100%; height: 120px; object-fit: cover; border-radius: 10px; border: 3px solid transparent; transition: all 0.2s; }
-        .similar-item img:hover { border-color: var(--accent-blue); transform: scale(1.02); }
-        .similar-item.selected img { border-color: var(--accent-orange); box-shadow: 0 0 15px rgba(255, 107, 53, 0.5); }
-        .similar-item-placeholder { width: 100%; height: 120px; background: var(--bg-secondary); border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 12px; }
-        .similar-item span { font-size: 12px; color: var(--text-secondary); display: block; margin-top: 8px; }
-
-        .similar-item.protected img { border-color: #fbbf24; opacity: 0.6; }
-        .similar-item.protected::after { content: '🔒'; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 24px; }
-
-        .toast { position: fixed; bottom: 30px; right: 30px; background: var(--bg-card); color: var(--text-primary); padding: 16px 24px; border-radius: 10px; border: 1px solid var(--accent-purple); box-shadow: 0 10px 40px rgba(0,0,0,0.4); display: none; z-index: 1000; }
-        .toast.show { display: block; animation: slideIn 0.3s ease; }
-        .toast.success { border-color: #22c55e; }
-        .toast.error { border-color: #ef4444; }
-        .toast.warning { border-color: #fbbf24; }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar { width: 60px; }
+            .sidebar-logo span, .nav-item span { display: none; }
+            .main-content { margin-left: 60px; }
+            .nav-item { justify-content: center; padding: 14px; }
+        }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>👤 Visitor Embeddings Dashboard</h1>
-        <p>View visitors and manage face clusters using K-Means</p>
-    </div>
-
-    <div class="controls">
-        <div class="cluster-stats">
-            <span class="stat-label">Clusters:</span>
-            <span class="stat-value">{{ cluster_info.n_clusters }}</span>
-            <span class="stat-label">Total Points:</span>
-            <span class="stat-value">{{ cluster_info.total_points }}</span>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="8" r="4"/>
+                <path d="M4 20c0-4 4-6 8-6s8 2 8 6"/>
+            </svg>
+            <span>Face Cluster</span>
         </div>
-        <button onclick="refreshClusters()" id="refresh-btn">🔄 Re-cluster</button>
-    </div>
-
-    <div class="container">
-        {% for visitor in visitors %}
-        <div class="visitor-card" data-visitor-id="{{ visitor.object_id }}">
-            <div class="visitor-header" onclick="toggleSimilar(this)">
-                {% if visitor.main_image %}
-                <img src="{{ visitor.main_image }}" alt="{{ visitor.name }}" class="visitor-avatar" onerror="this.style.display='none'">
-                {% else %}
-                <div class="visitor-avatar-placeholder">👤</div>
-                {% endif %}
-                <div class="visitor-info">
-                    <h3>{{ visitor.name }}</h3>
-                    <span>Object ID: {{ visitor.object_id }}</span>
-                </div>
-                <div class="badge">{{ visitor.similar_count }} similar</div>
-                <span class="expand-icon">▼</span>
+        <nav class="sidebar-nav">
+            <div class="nav-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="7" height="7" rx="1"/>
+                    <rect x="14" y="3" width="7" height="7" rx="1"/>
+                    <rect x="3" y="14" width="7" height="7" rx="1"/>
+                    <rect x="14" y="14" width="7" height="7" rx="1"/>
+                </svg>
+                <span>Dashboard</span>
             </div>
-            <div class="similar-section">
-                <div class="action-bar">
-                    <button class="btn-select-all" onclick="toggleSelectAll(this, {{ visitor.object_id }})">Select All</button>
-                    <button class="btn-ignore" onclick="ignoreSelected({{ visitor.object_id }})" disabled>Mark as Ignored</button>
-                    <span class="selected-count" id="count-{{ visitor.object_id }}">0 selected</span>
+            <div class="nav-item active">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="9" cy="7" r="4"/>
+                    <path d="M3 21v-2a4 4 0 0 1 4-4h4a4 4 0 0 1 4 4v2"/>
+                    <circle cx="17" cy="11" r="3"/>
+                    <path d="M21 21v-1a3 3 0 0 0-2-2.8"/>
+                </svg>
+                <span>Review Clusters</span>
+            </div>
+            <div class="nav-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="3"/>
+                    <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                </svg>
+                <span>Settings</span>
+            </div>
+            <div class="nav-item">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                    <polyline points="16 17 21 12 16 7"/>
+                    <line x1="21" y1="12" x2="9" y2="12"/>
+                </svg>
+                <span>Log out</span>
+            </div>
+        </nav>
+    </aside>
+
+    <!-- Main content -->
+    <main class="main-content">
+        <!-- Top header -->
+        <header class="top-header">
+            <h1>Visitor Face Clustering Utility</h1>
+            <div class="header-actions">
+                <div class="header-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                        <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+                    </svg>
                 </div>
-                <div class="similar-grid" id="grid-{{ visitor.object_id }}">
-                    {% for img in visitor.similar_images %}
-                    <div class="similar-item" data-id="{{ img.id }}">
-                        <input type="checkbox" id="cb-{{ visitor.object_id }}-{{ img.id }}" onchange="updateSelection({{ visitor.object_id }})">
-                        <label for="cb-{{ visitor.object_id }}-{{ img.id }}">
-                            {% if img.path %}
-                            <img src="{{ img.path }}" alt="Point {{ img.id }}" loading="lazy" onerror="this.outerHTML='<div class=similar-item-placeholder>No img</div>'">
-                            {% else %}
-                            <div class="similar-item-placeholder">No image</div>
-                            {% endif %}
-                        </label>
-                        <span>ID: {{ img.id }}</span>
+                <div class="header-icon">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="10"/>
+                        <circle cx="12" cy="10" r="3"/>
+                        <path d="M7 20.662V19a2 2 0 0 1 2-2h6a2 2 0 0 1 2 2v1.662"/>
+                    </svg>
+                </div>
+            </div>
+        </header>
+
+        <!-- Controls bar -->
+        <div class="controls-bar">
+            <span class="label">Sort by:</span>
+            <div class="dropdown">
+                Similarity Score
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+            </div>
+            <div class="dropdown">
+                Date Detected
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="6 9 12 15 18 9"/>
+                </svg>
+            </div>
+            <div class="cluster-stats">
+                <div class="stat">
+                    <span class="stat-label">Clusters:</span>
+                    <span class="stat-value">{{ cluster_info.n_clusters }}</span>
+                </div>
+                <div class="stat">
+                    <span class="stat-label">Total Faces:</span>
+                    <span class="stat-value">{{ cluster_info.total_points }}</span>
+                </div>
+                <button class="btn-recluster" onclick="refreshClusters()" id="refresh-btn">Re-cluster</button>
+            </div>
+        </div>
+
+        <!-- Clusters grid -->
+        <div class="clusters-container">
+            <div class="clusters-grid">
+                {% for visitor in visitors %}
+                <div class="cluster-card" data-visitor-id="{{ visitor.object_id }}" onclick="openClusterModal({{ visitor.object_id }})">
+                    <div class="cluster-header">
+                        <span class="cluster-name">Cluster: {{ visitor.name }}</span>
+                        <div class="cluster-menu" onclick="event.stopPropagation()">
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                                <circle cx="12" cy="5" r="2"/>
+                                <circle cx="12" cy="12" r="2"/>
+                                <circle cx="12" cy="19" r="2"/>
+                            </svg>
+                        </div>
                     </div>
-                    {% endfor %}
+                    <div class="cluster-faces">
+                        {% if visitor.main_image %}
+                        <img src="{{ visitor.main_image }}" alt="{{ visitor.name }}" class="face-thumb main" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">
+                        {% endif %}
+                        {% for img in visitor.similar_images[:4] %}
+                        {% if img.path %}
+                        <img src="{{ img.path }}" alt="Face" class="face-thumb" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">
+                        {% else %}
+                        <div class="face-placeholder">No img</div>
+                        {% endif %}
+                        {% endfor %}
+                        {% if visitor.similar_count > 4 %}
+                        <div class="more-faces">+{{ visitor.similar_count - 4 }}</div>
+                        {% endif %}
+                    </div>
                 </div>
+                {% endfor %}
             </div>
         </div>
-        {% endfor %}
+    </main>
+
+    <!-- Modal -->
+    <div class="modal-overlay" id="modal-overlay">
+        <div class="modal">
+            <div class="modal-header">
+                <h2 id="modal-title">Cluster: Loading...</h2>
+                <div class="modal-close" onclick="closeModal()">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="18" y1="6" x2="6" y2="18"/>
+                        <line x1="6" y1="6" x2="18" y2="18"/>
+                    </svg>
+                </div>
+            </div>
+            <div class="modal-body">
+                <div class="modal-section">
+                    <div class="modal-section-title">Registered Entry</div>
+                    <div class="modal-faces" id="modal-main-face"></div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-section-title">Detected Instances (<span id="modal-count">0</span> selected)</div>
+                    <div class="modal-faces" id="modal-faces"></div>
+                </div>
+                <div class="modal-actions">
+                    <button class="btn-action btn-ignore" id="btn-ignore" onclick="ignoreSelected()" disabled>Ignore Selected</button>
+                    <button class="btn-action btn-gold" id="btn-gold" onclick="createGoldEmbedding()">Gold Embedding</button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-combine" id="btn-combine" onclick="combineSelected()" disabled>COMBINE SELECTED</button>
+            </div>
+        </div>
     </div>
 
     <div class="toast" id="toast"></div>
 
     <script>
-        document.getElementById('threshold').oninput = function() {
-            document.getElementById('threshold-value').textContent = this.value;
+        // Store current modal data
+        let currentVisitorId = null;
+        let currentVisitorData = null;
+        let selectedIds = new Set();
+
+        // Visitor data from server (embedded in page)
+        const visitorsData = {
+            {% for visitor in visitors %}
+            {{ visitor.object_id }}: {
+                name: "{{ visitor.name }}",
+                main_image: "{{ visitor.main_image or '' }}",
+                similar_images: [
+                    {% for img in visitor.similar_images %}
+                    { id: {{ img.id }}, path: "{{ img.path or '' }}" },
+                    {% endfor %}
+                ]
+            },
+            {% endfor %}
         };
 
         async function refreshClusters() {
             const btn = document.getElementById('refresh-btn');
             btn.disabled = true;
-            btn.textContent = '⏳ Clustering...';
+            btn.textContent = 'Clustering...';
 
             try {
                 const response = await fetch('/api/refresh-clusters', { method: 'POST' });
@@ -166,48 +330,74 @@
             } catch (err) {
                 showToast('Error: ' + err.message, 'error');
                 btn.disabled = false;
-                btn.textContent = '🔄 Re-cluster';
+                btn.textContent = 'Re-cluster';
             }
         }
 
-        function toggleSimilar(header) {
-            const section = header.nextElementSibling;
-            section.classList.toggle('show');
-            header.classList.toggle('expanded');
+        function openClusterModal(visitorId) {
+            currentVisitorId = visitorId;
+            currentVisitorData = visitorsData[visitorId];
+            selectedIds = new Set();
+
+            // Set title
+            const isRegistered = !currentVisitorData.name.startsWith('unknown/');
+            document.getElementById('modal-title').textContent =
+                `Cluster: ${currentVisitorData.name}${isRegistered ? ' (Registered)' : ''}`;
+
+            // Set main face
+            const mainFaceHtml = currentVisitorData.main_image
+                ? `<div class="modal-face selected" data-id="main">
+                     <img src="${currentVisitorData.main_image}" alt="Main" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%231c2128%22 width=%2280%22 height=%2280%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%237d8590%22 font-size=%2212%22>No img</text></svg>'">
+                     <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
+                   </div>`
+                : '<div class="face-placeholder" style="width:80px;height:80px">No image</div>';
+            document.getElementById('modal-main-face').innerHTML = mainFaceHtml;
+
+            // Set detected faces
+            const facesHtml = currentVisitorData.similar_images.map(img =>
+                img.path
+                    ? `<div class="modal-face" data-id="${img.id}" onclick="toggleFaceSelection(${img.id})">
+                         <img src="${img.path}" alt="Face ${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%231c2128%22 width=%2280%22 height=%2280%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%237d8590%22 font-size=%2212%22>No img</text></svg>'">
+                         <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
+                       </div>`
+                    : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`
+            ).join('');
+            document.getElementById('modal-faces').innerHTML = facesHtml;
+
+            updateSelectionCount();
+            document.getElementById('modal-overlay').classList.add('show');
         }
 
-        function updateSelection(visitorId) {
-            const grid = document.getElementById('grid-' + visitorId);
-            const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
-            const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
-            const count = checked.length;
-
-            document.getElementById('count-' + visitorId).textContent = count + ' selected';
-
-            const ignoreBtn = grid.parentElement.querySelector('.btn-ignore');
-            ignoreBtn.disabled = count === 0;
-
-            // Update visual selection state
-            checkboxes.forEach(cb => {
-                cb.closest('.similar-item').classList.toggle('selected', cb.checked);
-            });
+        function closeModal() {
+            document.getElementById('modal-overlay').classList.remove('show');
+            currentVisitorId = null;
+            currentVisitorData = null;
+            selectedIds.clear();
         }
 
-        function toggleSelectAll(btn, visitorId) {
-            const grid = document.getElementById('grid-' + visitorId);
-            const checkboxes = grid.querySelectorAll('input[type="checkbox"]');
-            const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+        function toggleFaceSelection(id) {
+            if (selectedIds.has(id)) {
+                selectedIds.delete(id);
+            } else {
+                selectedIds.add(id);
+            }
 
-            checkboxes.forEach(cb => cb.checked = !allChecked);
-            btn.textContent = allChecked ? 'Select All' : 'Deselect All';
-            updateSelection(visitorId);
+            const faceEl = document.querySelector(`#modal-faces .modal-face[data-id="${id}"]`);
+            if (faceEl) {
+                faceEl.classList.toggle('selected', selectedIds.has(id));
+            }
+            updateSelectionCount();
         }
 
-        async function ignoreSelected(visitorId) {
-            const grid = document.getElementById('grid-' + visitorId);
-            const checked = grid.querySelectorAll('input[type="checkbox"]:checked');
-            const ids = Array.from(checked).map(cb => parseInt(cb.closest('.similar-item').dataset.id));
+        function updateSelectionCount() {
+            const count = selectedIds.size;
+            document.getElementById('modal-count').textContent = count;
+            document.getElementById('btn-ignore').disabled = count === 0;
+            document.getElementById('btn-combine').disabled = count === 0;
+        }
 
+        async function ignoreSelected() {
+            const ids = Array.from(selectedIds);
             if (ids.length === 0) return;
 
             try {
@@ -218,32 +408,75 @@
                 });
 
                 const result = await response.json();
-
                 if (result.success) {
-                    // Build message based on what happened
-                    let message = result.message || `Marked ${result.updated} items as ignored`;
-                    let toastType = 'success';
+                    showToast(result.message || `Ignored ${result.updated} items`, 'success');
 
-                    if (result.skipped && result.skipped.length > 0) {
-                        toastType = 'warning';
-                    }
-
-                    showToast(message, toastType);
-
-                    // Remove only the items that were actually ignored (not skipped)
+                    // Remove from UI
                     const skippedSet = new Set(result.skipped || []);
-                    checked.forEach(cb => {
-                        const itemId = parseInt(cb.closest('.similar-item').dataset.id);
-                        if (!skippedSet.has(itemId)) {
-                            cb.closest('.similar-item').remove();
-                        } else {
-                            // Uncheck skipped items and mark them visually
-                            cb.checked = false;
-                            cb.closest('.similar-item').classList.remove('selected');
-                            cb.closest('.similar-item').classList.add('protected');
+                    ids.forEach(id => {
+                        if (!skippedSet.has(id)) {
+                            const el = document.querySelector(`#modal-faces .modal-face[data-id="${id}"]`);
+                            if (el) el.remove();
+                            selectedIds.delete(id);
+                            // Also remove from data
+                            const idx = currentVisitorData.similar_images.findIndex(img => img.id === id);
+                            if (idx > -1) currentVisitorData.similar_images.splice(idx, 1);
                         }
                     });
-                    updateSelection(visitorId);
+                    updateSelectionCount();
+                } else {
+                    showToast('Error: ' + result.error, 'error');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        }
+
+        async function createGoldEmbedding() {
+            const remaining = currentVisitorData.similar_images.length;
+            if (remaining === 0) {
+                showToast('No images remaining to combine', 'warning');
+                return;
+            }
+
+            if (!confirm(`Create Gold Embedding from ${remaining} images?`)) return;
+
+            try {
+                const response = await fetch('/api/gold-embedding', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ registered_object_id: currentVisitorId })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    showToast(result.message, 'success');
+                } else {
+                    showToast('Error: ' + result.error, 'error');
+                }
+            } catch (err) {
+                showToast('Error: ' + err.message, 'error');
+            }
+        }
+
+        async function combineSelected() {
+            const ids = Array.from(selectedIds);
+            if (ids.length === 0) return;
+
+            if (!confirm(`Combine ${ids.length} selected faces with the main entry?\n\nThis will merge them and DELETE the selected faces.`)) return;
+
+            try {
+                const response = await fetch('/api/perfect-embedding', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ registered_object_id: currentVisitorId })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    showToast(result.message, 'success');
+                    closeModal();
+                    setTimeout(() => window.location.reload(), 1000);
                 } else {
                     showToast('Error: ' + result.error, 'error');
                 }
@@ -258,6 +491,16 @@
             toast.className = 'toast show ' + type;
             setTimeout(() => toast.classList.remove('show'), 3000);
         }
+
+        // Close modal on overlay click
+        document.getElementById('modal-overlay').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        // Close modal on Escape key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape') closeModal();
+        });
     </script>
 </body>
 </html>

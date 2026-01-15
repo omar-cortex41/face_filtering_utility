@@ -3,10 +3,12 @@ import json
 from pathlib import Path
 import yaml
 import numpy as np
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+from sklearn.cluster import MiniBatchKMeans
 from qdrant_client import QdrantClient
+from qdrant_client.models import PointStruct
 import cv2
+import pickle
+import time
 
 # MediaPipe for frontal face detection
 try:
@@ -28,6 +30,7 @@ QDRANT_URL = config["qdrant"]["url"]
 QDRANT_COLLECTION = config["qdrant"]["collection"]
 PHOTOS_DIR = config["photos"]["directory"]
 FACE_FILTER_CONFIG = config.get("face_filter", {})
+CLUSTERING_CONFIG = config.get("clustering", {})
 
 
 def get_db_connection():
@@ -84,17 +87,48 @@ def get_qdrant_point(point_id: int):
 
 def get_visitors() -> dict[str, int]:
     """
-    Get all visitors with their object_id.
+    Get all registered visitors with their object_id.
     Returns {name: object_id}.
+
+    Supports two data formats:
+    1. Objects with visitor_id attribute (legacy)
+    2. Objects linked via fr_logs with is_registered=true (production)
     """
+    visitors = {}
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            # First try: legacy format with visitor_id
             cur.execute("""
                 SELECT object_attributes->>'name' as name, object_id
                 FROM objects
                 WHERE object_attributes ? 'visitor_id'
             """)
-            return {row[0]: row[1] for row in cur.fetchall() if row[0]}
+            for row in cur.fetchall():
+                if row[0]:
+                    visitors[row[0]] = row[1]
+
+            # Second try: production format via fr_logs
+            if not visitors:
+                cur.execute("""
+                    SELECT DISTINCT o.object_id, o.object_attributes->>'image_path' as img_path
+                    FROM objects o
+                    JOIN fr_logs f ON o.object_id = f.object_id
+                    WHERE f.is_registered = true
+                    AND o.object_attributes->>'image_path' IS NOT NULL
+                """)
+                for row in cur.fetchall():
+                    object_id = row[0]
+                    img_path = row[1]
+                    # Extract name from image_path: photos/Name_ID/image.jpg -> Name
+                    if img_path:
+                        parts = img_path.split('/')
+                        if len(parts) >= 2:
+                            folder_name = parts[1]  # e.g., "Najada Gjonaj_J259223044Q"
+                            name = folder_name.rsplit('_', 1)[0]  # "Najada Gjonaj"
+                            visitors[name] = object_id
+
+    return visitors
 
 
 def find_similar_embeddings(object_id: int, similarity_threshold: float = 0.2, limit: int = 1000) -> list[int]:
@@ -266,41 +300,70 @@ def get_all_embeddings() -> tuple[list[int], np.ndarray]:
     return point_ids, vectors
 
 
-def find_optimal_k(vectors: np.ndarray, min_k: int = 2, max_k: int = 50) -> int:
+# Disk cache for persistence across restarts
+CLUSTER_CACHE_FILE = Path(__file__).parent / ".cluster_cache.pkl"
+
+
+def _estimate_k(n_samples: int, n_visitors: int) -> int:
     """
-    Find optimal number of clusters using silhouette score.
+    Fast K estimation using rule of thumb.
+    Much faster than silhouette search.
     """
-    n_samples = len(vectors)
-    max_k = min(max_k, n_samples - 1)  # Can't have more clusters than samples
+    # Rule of thumb: sqrt(n/2) is often a good starting point
+    rule_of_thumb = int(np.sqrt(n_samples / 2))
 
-    if max_k < min_k:
-        return min_k
+    # At least as many clusters as known visitors + some for unknowns
+    min_k = max(n_visitors + 10, 20)
 
-    best_k = min_k
-    best_score = -1
+    # Cap at reasonable maximum
+    max_k = min(n_samples // 5, 300)
 
-    for k in range(min_k, max_k + 1):
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        labels = kmeans.fit_predict(vectors)
+    return max(min_k, min(rule_of_thumb, max_k))
 
-        # Silhouette score requires at least 2 clusters with >1 sample
-        if len(set(labels)) > 1:
-            score = silhouette_score(vectors, labels)
-            if score > best_score:
-                best_score = score
-                best_k = k
 
-    return best_k
+def _load_cache_from_disk() -> bool:
+    """Load cluster cache from disk if available."""
+    global _cluster_cache
+    try:
+        if CLUSTER_CACHE_FILE.exists():
+            with open(CLUSTER_CACHE_FILE, "rb") as f:
+                cached = pickle.load(f)
+                # Validate cache has expected structure
+                if all(k in cached for k in ["labels", "point_ids", "n_clusters", "timestamp"]):
+                    _cluster_cache = cached
+                    age = time.time() - cached.get("timestamp", 0)
+                    print(f"[Cluster] Loaded cache from disk ({len(cached['point_ids'])} points, {age:.0f}s old)")
+                    return True
+    except Exception as e:
+        print(f"[Cluster] Failed to load disk cache: {e}")
+    return False
+
+
+def _save_cache_to_disk():
+    """Save cluster cache to disk for persistence."""
+    global _cluster_cache
+    try:
+        cache_to_save = {**_cluster_cache, "timestamp": time.time()}
+        with open(CLUSTER_CACHE_FILE, "wb") as f:
+            pickle.dump(cache_to_save, f)
+    except Exception as e:
+        print(f"[Cluster] Failed to save cache: {e}")
 
 
 def cluster_embeddings(force_refresh: bool = False) -> dict[int, int]:
     """
-    Cluster all embeddings using K-means with auto-detected K.
+    Cluster all embeddings using MiniBatchKMeans (fast).
     Returns: {point_id: cluster_label}
     """
     global _cluster_cache
+    start_time = time.time()
 
+    # Try memory cache first
     if not force_refresh and _cluster_cache["labels"] is not None:
+        return dict(zip(_cluster_cache["point_ids"], _cluster_cache["labels"]))
+
+    # Try disk cache (survives server restarts)
+    if not force_refresh and _load_cache_from_disk():
         return dict(zip(_cluster_cache["point_ids"], _cluster_cache["labels"]))
 
     point_ids, vectors = get_all_embeddings()
@@ -308,22 +371,30 @@ def cluster_embeddings(force_refresh: bool = False) -> dict[int, int]:
     if len(vectors) < 2:
         return {pid: 0 for pid in point_ids}
 
-    # Get number of known visitors as minimum K
+    # Fast K estimation (no expensive silhouette search)
     visitors = get_visitors()
-    min_k = max(2, len(visitors))
-    max_k = min(len(vectors) // 2, 100)  # Don't exceed half the samples
+    optimal_k = _estimate_k(len(vectors), len(visitors))
 
-    # Find optimal K
-    optimal_k = find_optimal_k(vectors, min_k=min_k, max_k=max_k)
-
-    # Perform final clustering
-    kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
+    # MiniBatchKMeans is ~10x faster than KMeans for large datasets
+    kmeans = MiniBatchKMeans(
+        n_clusters=optimal_k,
+        random_state=42,
+        batch_size=min(1024, len(vectors)),  # Process in batches
+        n_init=3,  # Fewer initializations (faster)
+        max_iter=100,
+    )
     labels = kmeans.fit_predict(vectors)
 
-    # Cache results
+    # Cache results in memory
     _cluster_cache["labels"] = labels
     _cluster_cache["point_ids"] = point_ids
     _cluster_cache["n_clusters"] = optimal_k
+
+    # Save to disk for persistence
+    _save_cache_to_disk()
+
+    elapsed = time.time() - start_time
+    print(f"[Cluster] {optimal_k} clusters from {len(vectors)} embeddings in {elapsed:.2f}s")
 
     return dict(zip(point_ids, labels))
 
@@ -402,6 +473,394 @@ def debug_point_search(point_id: int):
         print(f"Threshold {threshold}: {len(result.points)} similar points")
         if threshold == 0.0 and result.points:
             print(f"  Top 5 scores: {[round(p.score, 3) for p in result.points[:5]]}")
+
+
+def get_embedding_for_object(object_id: int) -> np.ndarray | None:
+    """Get the embedding vector for a specific object_id from Qdrant."""
+    client = get_qdrant_client()
+    points = client.retrieve(
+        collection_name=QDRANT_COLLECTION,
+        ids=[object_id],
+        with_vectors=True,
+    )
+    if points and points[0].vector:
+        return np.array(points[0].vector)
+    return None
+
+
+def get_embeddings_for_objects(object_ids: list[int]) -> dict[int, np.ndarray]:
+    """Get embeddings for multiple object_ids from Qdrant."""
+    client = get_qdrant_client()
+    points = client.retrieve(
+        collection_name=QDRANT_COLLECTION,
+        ids=object_ids,
+        with_vectors=True,
+    )
+    return {p.id: np.array(p.vector) for p in points if p.vector}
+
+
+def update_embedding(object_id: int, embedding: np.ndarray) -> bool:
+    """Update the embedding for an object_id in Qdrant."""
+    client = get_qdrant_client()
+    try:
+        # Get existing payload if any
+        existing = client.retrieve(
+            collection_name=QDRANT_COLLECTION,
+            ids=[object_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        payload = existing[0].payload if existing else {}
+
+        # Upsert the point with new embedding
+        client.upsert(
+            collection_name=QDRANT_COLLECTION,
+            points=[
+                PointStruct(
+                    id=object_id,
+                    vector=embedding.tolist(),
+                    payload=payload,
+                )
+            ],
+        )
+        return True
+    except Exception as e:
+        print(f"[ERROR] Failed to update embedding for {object_id}: {e}")
+        return False
+
+
+def delete_objects_from_db(object_ids: list[int]) -> int:
+    """Delete objects and their related events from the database by their IDs."""
+    if not object_ids:
+        return 0
+
+    deleted = 0
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for oid in object_ids:
+                # First delete related events (foreign key constraint)
+                cur.execute("DELETE FROM events WHERE object_id = %s", (oid,))
+                # Then delete the object
+                cur.execute("DELETE FROM objects WHERE object_id = %s", (oid,))
+                deleted += cur.rowcount
+        conn.commit()
+    return deleted
+
+
+def delete_objects_from_qdrant(object_ids: list[int]) -> int:
+    """Delete objects from Qdrant by their IDs."""
+    if not object_ids:
+        return 0
+
+    client = get_qdrant_client()
+    try:
+        client.delete(
+            collection_name=QDRANT_COLLECTION,
+            points_selector=object_ids,
+        )
+        return len(object_ids)
+    except Exception as e:
+        print(f"[ERROR] Failed to delete from Qdrant: {e}")
+        return 0
+
+
+def combine_embeddings(
+    registered_object_id: int,
+    selected_object_ids: list[int],
+    weight_existing: float = 0.5,
+    cleanup: bool = True
+) -> dict:
+    """
+    Combine selected embeddings with the registered entry's existing embedding.
+
+    Workflow:
+    1. Calculate centroid (average) of selected embeddings
+    2. Fetch existing embedding for registered entry from Qdrant
+    3. Calculate weighted average: final = weight * existing + (1-weight) * new_average
+    4. Update Qdrant with final embedding
+    5. Delete redundant entries from database and Qdrant (if cleanup=True)
+
+    Args:
+        registered_object_id: The main registered entry ID (to keep)
+        selected_object_ids: List of object IDs selected by user to combine
+        weight_existing: Weight for existing embedding (0.0-1.0), default 0.5
+        cleanup: Whether to delete redundant entries after combining
+
+    Returns:
+        dict with success status and details
+    """
+    # Filter out the registered entry from selected (we handle it separately)
+    other_ids = [oid for oid in selected_object_ids if oid != registered_object_id]
+
+    if not other_ids:
+        return {"success": False, "error": "No images selected to combine"}
+
+    # Step 1: Get embeddings for selected images
+    selected_embeddings = get_embeddings_for_objects(other_ids)
+
+    if not selected_embeddings:
+        return {"success": False, "error": "Could not retrieve selected embeddings"}
+
+    # Calculate centroid (average) of selected embeddings
+    vectors = list(selected_embeddings.values())
+    new_average = np.mean(vectors, axis=0)
+
+    # Normalize the new average
+    norm = np.linalg.norm(new_average)
+    if norm > 0:
+        new_average = new_average / norm
+
+    # Step 2: Fetch existing embedding for registered entry
+    existing_embedding = get_embedding_for_object(registered_object_id)
+
+    if existing_embedding is None:
+        return {"success": False, "error": "Could not retrieve existing embedding for registered entry"}
+
+    # Step 3: Calculate weighted average
+    # final = weight_existing * existing + (1 - weight_existing) * new_average
+    final_embedding = weight_existing * existing_embedding + (1 - weight_existing) * new_average
+
+    # Normalize final embedding
+    norm = np.linalg.norm(final_embedding)
+    if norm > 0:
+        final_embedding = final_embedding / norm
+
+    # Step 4: Update Qdrant with final embedding
+    success = update_embedding(registered_object_id, final_embedding)
+
+    if not success:
+        return {"success": False, "error": "Failed to update embedding in Qdrant"}
+
+    # Step 5: Data cleanup - delete redundant entries
+    deleted_db = 0
+    deleted_qdrant = 0
+
+    if cleanup and other_ids:
+        deleted_db = delete_objects_from_db(other_ids)
+        deleted_qdrant = delete_objects_from_qdrant(other_ids)
+
+    # Clear cluster cache since embeddings changed
+    global _cluster_cache
+    _cluster_cache = {"labels": None, "point_ids": None, "n_clusters": None}
+
+    return {
+        "success": True,
+        "object_id": registered_object_id,
+        "combined_count": len(vectors),
+        "weight_existing": weight_existing,
+        "deleted_from_db": deleted_db,
+        "deleted_from_qdrant": deleted_qdrant,
+        "message": f"Combined {len(vectors)} images. Deleted {deleted_db} redundant entries."
+    }
+
+
+def get_non_ignored_cluster_members(main_object_id: int) -> list[int]:
+    """
+    Get all cluster members for main_object_id, excluding ignored ones.
+    Returns list of object_ids that are NOT ignored.
+    """
+    # Get all cluster members
+    cluster_members = get_cluster_for_point(main_object_id)
+
+    if not cluster_members:
+        return []
+
+    # Filter out ignored ones by checking database
+    non_ignored = []
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            for oid in cluster_members:
+                cur.execute("""
+                    SELECT object_attributes->>'display_name'
+                    FROM objects WHERE object_id = %s
+                """, (oid,))
+                row = cur.fetchone()
+                # Include if no display_name or display_name is not 'ignored'
+                if not row or row[0] != 'ignored':
+                    non_ignored.append(oid)
+
+    return non_ignored
+
+
+def create_gold_embedding(main_object_id: int) -> dict:
+    """
+    Create Gold Embedding: average of ALL remaining (non-ignored) images in cluster,
+    excluding the main image.
+
+    Stores the original main embedding in Qdrant payload for Perfect to use later.
+
+    Args:
+        main_object_id: The registered entry ID (whose embedding will be updated)
+
+    Returns:
+        dict with success status and details
+    """
+    # Get all non-ignored cluster members, excluding main
+    cluster_members = get_non_ignored_cluster_members(main_object_id)
+    other_ids = [oid for oid in cluster_members if oid != main_object_id]
+
+    if not other_ids:
+        return {"success": False, "error": "No remaining images to combine (all ignored?)"}
+
+    # Get original main embedding BEFORE we modify it
+    original_main = get_embedding_for_object(main_object_id)
+    if original_main is None:
+        return {"success": False, "error": "Could not retrieve main object's embedding"}
+
+    # Get embeddings for all other images
+    embeddings = get_embeddings_for_objects(other_ids)
+
+    if not embeddings:
+        return {"success": False, "error": "Could not retrieve embeddings"}
+
+    # Calculate Gold (average of all others)
+    vectors = list(embeddings.values())
+    gold_embedding = np.mean(vectors, axis=0)
+
+    # Normalize
+    norm = np.linalg.norm(gold_embedding)
+    if norm > 0:
+        gold_embedding = gold_embedding / norm
+
+    # Store original embedding in Qdrant payload, then update with Gold
+    client = get_qdrant_client()
+    try:
+        # Get existing payload
+        existing = client.retrieve(
+            collection_name=QDRANT_COLLECTION,
+            ids=[main_object_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        payload = existing[0].payload if existing else {}
+
+        # Store original embedding for Perfect to use later
+        payload["original_embedding"] = original_main.tolist()
+        payload["gold_applied"] = True
+
+        # Update with Gold embedding
+        client.upsert(
+            collection_name=QDRANT_COLLECTION,
+            points=[
+                PointStruct(
+                    id=main_object_id,
+                    vector=gold_embedding.tolist(),
+                    payload=payload,
+                )
+            ],
+        )
+
+        # Clear cluster cache
+        global _cluster_cache
+        _cluster_cache = {"labels": None, "point_ids": None, "n_clusters": None}
+
+        return {
+            "success": True,
+            "object_id": main_object_id,
+            "combined_count": len(vectors),
+            "gold_applied": True,
+            "message": f"Gold embedding created from {len(vectors)} images"
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to update embedding: {e}"}
+
+
+def create_perfect_embedding(main_object_id: int) -> dict:
+    """
+    Create Perfect Embedding: combines Gold (current) with Original main embedding.
+    Then removes all other images in the cluster (merged into main).
+
+    Formula: perfect = (gold + original_main) / 2
+
+    Requires Gold to have been applied first (original_embedding stored in payload).
+
+    Args:
+        main_object_id: The registered entry ID
+
+    Returns:
+        dict with success status and details
+    """
+    client = get_qdrant_client()
+
+    # Get all cluster members BEFORE we modify anything (for cleanup)
+    cluster_members = get_non_ignored_cluster_members(main_object_id)
+    other_ids = [oid for oid in cluster_members if oid != main_object_id]
+
+    # Get current point with payload and vector
+    points = client.retrieve(
+        collection_name=QDRANT_COLLECTION,
+        ids=[main_object_id],
+        with_payload=True,
+        with_vectors=True,
+    )
+
+    if not points:
+        return {"success": False, "error": "Could not find main object in Qdrant"}
+
+    point = points[0]
+    payload = point.payload or {}
+
+    # Check if Gold was applied
+    if not payload.get("gold_applied"):
+        return {"success": False, "error": "Gold embedding must be applied first"}
+
+    # Get original embedding from payload
+    original_embedding_list = payload.get("original_embedding")
+    if not original_embedding_list:
+        return {"success": False, "error": "Original embedding not found. Apply Gold first."}
+
+    original_embedding = np.array(original_embedding_list)
+    gold_embedding = np.array(point.vector)
+
+    # Calculate Perfect = (Gold + Original) / 2
+    perfect_embedding = (gold_embedding + original_embedding) / 2
+
+    # Normalize
+    norm = np.linalg.norm(perfect_embedding)
+    if norm > 0:
+        perfect_embedding = perfect_embedding / norm
+
+    # Update payload - remove original_embedding, mark perfect as applied
+    payload.pop("original_embedding", None)
+    payload["gold_applied"] = False
+    payload["perfect_applied"] = True
+
+    try:
+        # Update main with perfect embedding
+        client.upsert(
+            collection_name=QDRANT_COLLECTION,
+            points=[
+                PointStruct(
+                    id=main_object_id,
+                    vector=perfect_embedding.tolist(),
+                    payload=payload,
+                )
+            ],
+        )
+
+        # Delete all other images from Qdrant and DB (they're now merged into main)
+        deleted_qdrant = 0
+        deleted_db = 0
+        print(f"[Perfect] About to delete {len(other_ids)} other IDs: {other_ids[:5]}...")
+        if other_ids:
+            deleted_qdrant = delete_objects_from_qdrant(other_ids)
+            print(f"[Perfect] Deleted {deleted_qdrant} from Qdrant")
+            deleted_db = delete_objects_from_db(other_ids)
+            print(f"[Perfect] Deleted {deleted_db} from DB")
+
+        # Clear cluster cache
+        global _cluster_cache
+        _cluster_cache = {"labels": None, "point_ids": None, "n_clusters": None}
+
+        return {
+            "success": True,
+            "object_id": main_object_id,
+            "perfect_applied": True,
+            "deleted_count": len(other_ids),
+            "message": f"Perfect embedding created. Merged {len(other_ids)} images into main."
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to update embedding: {e}"}
 
 
 if __name__ == "__main__":
