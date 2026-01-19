@@ -7,14 +7,11 @@ import json
 from pathlib import Path
 import yaml
 import numpy as np
-from sklearn.cluster import MiniBatchKMeans
 from qdrant_client import QdrantClient
 from qdrant_client.models import PointStruct
 import cv2
-import pickle
 import time
 import os
-import threading
 from dataclasses import dataclass
 from typing import Optional
 
@@ -37,14 +34,24 @@ class TaskStatus:
 
 _task_status = TaskStatus()
 
-# MediaPipe for frontal face detection
+# MediaPipe Face Mesh for frontal face detection (468 landmarks)
 try:
     import mediapipe as mp
-    mp_face_detection = mp.solutions.face_detection
+    mp_face_mesh = mp.solutions.face_mesh
     MEDIAPIPE_AVAILABLE = True
 except ImportError:
-    mp_face_detection = None
+    mp_face_mesh = None
     MEDIAPIPE_AVAILABLE = False
+
+# InsightFace for face verification (ArcFace embeddings)
+try:
+    from insightface.app import FaceAnalysis
+    _insightface_app = FaceAnalysis(name='buffalo_s', providers=['CUDAExecutionProvider', 'CPUExecutionProvider'])
+    _insightface_app.prepare(ctx_id=0, det_size=(320, 320))
+    INSIGHTFACE_AVAILABLE = True
+except ImportError:
+    _insightface_app = None
+    INSIGHTFACE_AVAILABLE = False
 
 # Load configuration
 CONFIG_PATH = Path(__file__).parent / "config" / "config.yaml"
@@ -192,29 +199,42 @@ def find_similar_embeddings(object_id: int, similarity_threshold: float = 0.2, l
     return [hit.id for hit in result.points]
 
 
-# ========= Frontal Face Filter =========
+# ========= Frontal Face Filter (MediaPipe Face Mesh) =========
+
+# 3D model points for head pose estimation (generic face model)
+_MODEL_POINTS = np.array([
+    (0.0, 0.0, 0.0),          # Nose tip
+    (0.0, -330.0, -65.0),     # Chin
+    (-225.0, 170.0, -135.0),  # Left eye left corner
+    (225.0, 170.0, -135.0),   # Right eye right corner
+    (-150.0, -150.0, -125.0), # Left mouth corner
+    (150.0, -150.0, -125.0),  # Right mouth corner
+], dtype=np.float64)
+
+# Face Mesh landmark indices for the 6 points above
+_LANDMARK_INDICES = [1, 152, 33, 263, 61, 291]
+
+
 def is_frontal_face(image_path: str) -> bool:
     """
-    Check if the face in the image is frontal using MediaPipe.
-    Returns True if frontal (or if filter is disabled/unavailable), False otherwise.
+    Check if face is frontal using MediaPipe Face Mesh (468 landmarks).
+    Uses solvePnP to calculate head pose (yaw, pitch, roll).
+    Returns True if frontal, False otherwise.
     """
-    # Check if filter is enabled
     if not FACE_FILTER_CONFIG.get("enabled", True):
         return True
 
     if not MEDIAPIPE_AVAILABLE:
-        print("[WARN] MediaPipe not available, skipping frontal face filter")
+        print("[WARN] MediaPipe not available, skipping frontal check")
         return True
 
-    # Get thresholds from config
-    yaw_max = float(FACE_FILTER_CONFIG.get("yaw_max", 0.25))
-    yaw_min = float(FACE_FILTER_CONFIG.get("yaw_min", -0.25))
+    mp_config = FACE_FILTER_CONFIG.get("mediapipe", {})
+    yaw_max = float(mp_config.get("yaw_max", 15.0))    # degrees
+    pitch_max = float(mp_config.get("pitch_max", 15.0))  # degrees
+    min_confidence = float(mp_config.get("min_detection_confidence", 0.5))
     blur_min = float(FACE_FILTER_CONFIG.get("blur_min", 5.0))
-    min_confidence = float(FACE_FILTER_CONFIG.get("min_detection_confidence", 0.3))
 
-    # Load image
     try:
-        # Handle path - remove leading slash if present
         img_path = image_path.lstrip("/")
         if not Path(img_path).exists():
             return False
@@ -223,7 +243,7 @@ def is_frontal_face(image_path: str) -> bool:
         if frame is None:
             return False
 
-        H, W = frame.shape[:2]
+        h, w = frame.shape[:2]
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         # Check blur
@@ -232,87 +252,72 @@ def is_frontal_face(image_path: str) -> bool:
         if blur_val < blur_min:
             return False
 
-        # Detect face
-        with mp_face_detection.FaceDetection(
-            model_selection=0,
-            min_detection_confidence=min_confidence
-        ) as detector:
-            results = detector.process(rgb_frame)
+        # Detect face mesh with MediaPipe
+        with mp_face_mesh.FaceMesh(
+            static_image_mode=True,
+            max_num_faces=1,
+            refine_landmarks=True,
+            min_detection_confidence=min_confidence,
+        ) as face_mesh:
+            results = face_mesh.process(rgb_frame)
 
-        if not results.detections:
+        if not results.multi_face_landmarks:
             return False
 
-        # Get largest detection
-        def area_of(d):
-            bb = d.location_data.relative_bounding_box
-            return max(bb.width, 0) * max(bb.height, 0)
+        landmarks = results.multi_face_landmarks[0].landmark
 
-        detection = max(results.detections, key=area_of)
-        keypoints = detection.location_data.relative_keypoints
-        # Keypoints: [R_eye, L_eye, nose, mouth, R_ear, L_ear]
+        # Extract the 6 key points for pose estimation
+        image_points = np.array([
+            (landmarks[idx].x * w, landmarks[idx].y * h)
+            for idx in _LANDMARK_INDICES
+        ], dtype=np.float64)
 
-        if len(keypoints) < 6:
+        # Camera matrix (approximate)
+        focal_length = w
+        center = (w / 2, h / 2)
+        camera_matrix = np.array([
+            [focal_length, 0, center[0]],
+            [0, focal_length, center[1]],
+            [0, 0, 1]
+        ], dtype=np.float64)
+
+        dist_coeffs = np.zeros((4, 1))  # No lens distortion
+
+        # Solve for head pose
+        success, rotation_vec, translation_vec = cv2.solvePnP(
+            _MODEL_POINTS, image_points, camera_matrix, dist_coeffs,
+            flags=cv2.SOLVEPNP_ITERATIVE
+        )
+
+        if not success:
             return False
 
-        r_eye, l_eye, nose, mouth, r_ear, l_ear = keypoints[:6]
+        # Convert rotation vector to rotation matrix
+        rotation_mat, _ = cv2.Rodrigues(rotation_vec)
 
-        # Calculate yaw from ear-to-nose distances
-        dx_r = abs(nose.x - r_ear.x)
-        dx_l = abs(l_ear.x - nose.x)
-        denom = max(dx_r + dx_l, 1e-6)
-        yaw = (dx_l - dx_r) / denom  # +right, -left
+        # Get Euler angles (in degrees)
+        # Using rotation matrix to extract yaw, pitch, roll
+        sy = np.sqrt(rotation_mat[0, 0] ** 2 + rotation_mat[1, 0] ** 2)
 
-        # Check if frontal (yaw within thresholds)
-        is_frontal = yaw_min <= yaw <= yaw_max
+        if sy > 1e-6:
+            pitch = np.degrees(np.arctan2(rotation_mat[2, 1], rotation_mat[2, 2]))
+            yaw = np.degrees(np.arctan2(-rotation_mat[2, 0], sy))
+        else:
+            pitch = np.degrees(np.arctan2(-rotation_mat[1, 2], rotation_mat[1, 1]))
+            yaw = np.degrees(np.arctan2(-rotation_mat[2, 0], sy))
+
+        # Normalize pitch: frontal faces have pitch around -165° to -175°
+        # Convert to deviation from frontal (0 = looking straight at camera)
+        pitch_normalized = abs(abs(pitch) - 180) if abs(pitch) > 90 else abs(pitch)
+
+        # Check if face is frontal (within thresholds)
+        is_frontal = abs(yaw) <= yaw_max and pitch_normalized <= pitch_max
 
         return is_frontal
 
     except Exception as e:
-        print(f"[WARN] Frontal face check failed for {image_path}: {e}")
-        return True  # Default to True on error to not block
-
-
-# Cache for frontal face check results (persisted in DB)
-_frontal_cache: dict[int, bool] = {}
-_frontal_cache_loaded = False
-
-
-def _load_frontal_cache():
-    """Load frontal check cache from DB."""
-    global _frontal_cache, _frontal_cache_loaded
-    if _frontal_cache_loaded:
-        return
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT object_id,
-                           (object_attributes->>'is_frontal')::boolean
-                    FROM objects
-                    WHERE object_attributes->>'is_frontal' IS NOT NULL
-                """)
-                for row in cur.fetchall():
-                    _frontal_cache[row[0]] = row[1]
-        _frontal_cache_loaded = True
-        print(f"[Frontal] Loaded {len(_frontal_cache)} cached results from DB")
-    except Exception as e:
-        print(f"[Frontal] Failed to load cache: {e}")
-
-
-def _save_frontal_to_db(object_id: int, is_frontal: bool):
-    """Save frontal check result to DB for caching."""
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    UPDATE objects
-                    SET object_attributes = object_attributes || %s::jsonb
-                    WHERE object_id = %s
-                """, (json.dumps({"is_frontal": is_frontal}), object_id))
-                conn.commit()
-    except Exception as e:
-        pass  # Silently fail - cache is optional
+        print(f"[WARN] Face Mesh frontal check failed for {image_path}: {e}")
+        return False
 
 
 def _resolve_photo_path(image_path: str) -> str:
@@ -334,26 +339,14 @@ def _resolve_photo_path(image_path: str) -> str:
     return path
 
 
-def is_frontal_cached(object_id: int, image_path: str) -> bool:
-    """Check if face is frontal, using cache first."""
-    global _frontal_cache
-    _load_frontal_cache()
+def check_frontal(image_path: str) -> bool:
+    """Check if face is frontal. No caching."""
+    # If filter disabled, all faces are "frontal"
+    if not FACE_FILTER_CONFIG.get("enabled", True):
+        return True
 
-    # Check cache first
-    if object_id in _frontal_cache:
-        return _frontal_cache[object_id]
-
-    # Resolve actual path (handle photos/ vs albania_photos/ mismatch)
     resolved_path = _resolve_photo_path(image_path)
-
-    # Run actual check
-    result = is_frontal_face(resolved_path)
-
-    # Cache result
-    _frontal_cache[object_id] = result
-    _save_frontal_to_db(object_id, result)
-
-    return result
+    return is_frontal_face(resolved_path)
 
 
 def filter_frontal_faces(object_ids: list[int], get_image_path_func) -> list[int]:
@@ -428,238 +421,307 @@ def get_all_embeddings(update_progress: bool = False) -> tuple[list[int], np.nda
     return point_ids, vectors
 
 
-# Disk cache for persistence across restarts
-CLUSTER_CACHE_FILE = Path(__file__).parent / ".cluster_cache.pkl"
+# ============== Qdrant Cosine Similarity Search ==============
+
+# Similarity threshold from config (or default)
+SIMILARITY_CONFIG = config.get("similarity", {})
+SIMILARITY_THRESHOLD = float(SIMILARITY_CONFIG.get("threshold", 0.5))
 
 
-def _estimate_k(n_samples: int, n_visitors: int) -> int:
+def get_similar_faces(object_id: int, threshold: float = None, limit: int = 500) -> list[int]:
     """
-    Fast K estimation using rule of thumb.
-    Much faster than silhouette search.
+    Get all similar face IDs for a given object using Qdrant cosine similarity.
+    This is the core similarity function - uses the vector DB as intended.
+
+    Args:
+        object_id: The object_id to find similar faces for
+        threshold: Cosine similarity threshold (0-1, higher = more similar)
+        limit: Maximum number of results
+
+    Returns:
+        List of similar object_ids (including self)
     """
-    # Rule of thumb: sqrt(n/2) is often a good starting point
-    rule_of_thumb = int(np.sqrt(n_samples / 2))
+    if threshold is None:
+        threshold = SIMILARITY_THRESHOLD
 
-    # At least as many clusters as known visitors + some for unknowns
-    min_k = max(n_visitors + 10, 20)
+    client = get_qdrant_client()
 
-    # Cap at reasonable maximum
-    max_k = min(n_samples // 5, 300)
-
-    return max(min_k, min(rule_of_thumb, max_k))
-
-
-def _load_cache_from_disk() -> bool:
-    """Load cluster cache from disk if available."""
-    global _cluster_cache
-    try:
-        if CLUSTER_CACHE_FILE.exists():
-            with open(CLUSTER_CACHE_FILE, "rb") as f:
-                cached = pickle.load(f)
-                # Validate cache has expected structure
-                if all(k in cached for k in ["labels", "point_ids", "n_clusters", "timestamp"]):
-                    _cluster_cache = cached
-                    age = time.time() - cached.get("timestamp", 0)
-                    print(f"[Cluster] Loaded cache from disk ({len(cached['point_ids'])} points, {age:.0f}s old)")
-                    return True
-    except Exception as e:
-        print(f"[Cluster] Failed to load disk cache: {e}")
-    return False
-
-
-def _save_cache_to_disk():
-    """Save cluster cache to disk for persistence."""
-    global _cluster_cache
-    try:
-        cache_to_save = {**_cluster_cache, "timestamp": time.time()}
-        with open(CLUSTER_CACHE_FILE, "wb") as f:
-            pickle.dump(cache_to_save, f)
-    except Exception as e:
-        print(f"[Cluster] Failed to save cache: {e}")
-
-
-def cluster_embeddings(force_refresh: bool = False, background: bool = False) -> dict[int, int]:
-    """
-    Cluster all embeddings using MiniBatchKMeans (fast).
-    Returns: {point_id: cluster_label}
-
-    If background=True, returns cached results immediately and runs refresh in background.
-    """
-    global _cluster_cache
-
-    # Try memory cache first
-    if not force_refresh and _cluster_cache["labels"] is not None:
-        return dict(zip(_cluster_cache["point_ids"], _cluster_cache["labels"]))
-
-    # Try disk cache (survives server restarts)
-    if not force_refresh and _load_cache_from_disk():
-        return dict(zip(_cluster_cache["point_ids"], _cluster_cache["labels"]))
-
-    # If background requested and we have some cache, return it and refresh in background
-    if background and _cluster_cache["labels"] is not None:
-        threading.Thread(target=_run_clustering_background, daemon=True).start()
-        return dict(zip(_cluster_cache["point_ids"], _cluster_cache["labels"]))
-
-    # No cache - must run synchronously
-    return _run_clustering_sync()
-
-
-def _run_clustering_sync() -> dict[int, int]:
-    """Run clustering synchronously (blocking)."""
-    global _cluster_cache
-    start_time = time.time()
-
-    point_ids, vectors = get_all_embeddings(update_progress=False)
-
-    if len(vectors) < 2:
-        return {pid: 0 for pid in point_ids}
-
-    visitors = get_visitors()
-    optimal_k = _estimate_k(len(vectors), len(visitors))
-
-    kmeans = MiniBatchKMeans(
-        n_clusters=optimal_k,
-        random_state=42,
-        batch_size=min(2048, len(vectors)),
-        n_init=1,  # Single init for speed
-        max_iter=50,
+    # Get the embedding for this object
+    points = client.retrieve(
+        collection_name=QDRANT_COLLECTION,
+        ids=[object_id],
+        with_vectors=True,
     )
-    labels = kmeans.fit_predict(vectors)
 
-    _cluster_cache["labels"] = labels
-    _cluster_cache["point_ids"] = point_ids
-    _cluster_cache["n_clusters"] = optimal_k
-    _save_cache_to_disk()
+    if not points or not points[0].vector:
+        return [object_id]  # Return self if no embedding
 
-    elapsed = time.time() - start_time
-    print(f"[Cluster] {optimal_k} clusters from {len(vectors)} embeddings in {elapsed:.2f}s")
+    vector = points[0].vector
 
-    return dict(zip(point_ids, labels))
+    # Query Qdrant for similar embeddings
+    result = client.query_points(
+        collection_name=QDRANT_COLLECTION,
+        query=vector,
+        limit=limit,
+        score_threshold=threshold,
+    )
 
+    # Return all matching point IDs
+    similar_ids = [p.id for p in result.points]
 
-def _run_clustering_background():
-    """Run clustering in background thread with progress updates."""
-    global _cluster_cache, _task_status
-
-    if _task_status.running:
-        return  # Already running
-
-    try:
-        _task_status.running = True
-        _task_status.task_name = "clustering"
-        _task_status.progress = 0
-        _task_status.message = "Starting clustering..."
-        _task_status.error = None
-
-        start_time = time.time()
-
-        # Step 1: Load embeddings (0-30%)
-        _task_status.message = "Loading embeddings from Qdrant..."
-        point_ids, vectors = get_all_embeddings(update_progress=True)
-
-        if len(vectors) < 2:
-            _cluster_cache["labels"] = np.array([0] * len(point_ids))
-            _cluster_cache["point_ids"] = point_ids
-            _cluster_cache["n_clusters"] = 1
-            _task_status.progress = 100
-            _task_status.message = "Done (too few embeddings)"
-            return
-
-        # Step 2: Estimate K (30-35%)
-        _task_status.progress = 35
-        _task_status.message = "Estimating optimal cluster count..."
-        visitors = get_visitors()
-        optimal_k = _estimate_k(len(vectors), len(visitors))
-
-        # Step 3: Run K-Means (35-95%)
-        _task_status.progress = 40
-        _task_status.message = f"Clustering {len(vectors):,} embeddings into {optimal_k} clusters..."
-
-        kmeans = MiniBatchKMeans(
-            n_clusters=optimal_k,
-            random_state=42,
-            batch_size=min(2048, len(vectors)),
-            n_init=1,
-            max_iter=50,
-        )
-
-        # Fit in chunks to update progress
-        n_samples = len(vectors)
-        chunk_size = max(1000, n_samples // 10)
-
-        for i in range(0, n_samples, chunk_size):
-            end_idx = min(i + chunk_size, n_samples)
-            kmeans.partial_fit(vectors[i:end_idx])
-            pct = 40 + int((end_idx / n_samples) * 50)
-            _task_status.progress = pct
-            _task_status.message = f"Clustering... {end_idx:,}/{n_samples:,}"
-
-        # Final predict
-        _task_status.progress = 92
-        _task_status.message = "Assigning cluster labels..."
-        labels = kmeans.predict(vectors)
-
-        # Step 4: Save (95-100%)
-        _task_status.progress = 95
-        _task_status.message = "Saving results..."
-
-        _cluster_cache["labels"] = labels
-        _cluster_cache["point_ids"] = point_ids
-        _cluster_cache["n_clusters"] = optimal_k
-        _save_cache_to_disk()
-
-        elapsed = time.time() - start_time
-        _task_status.progress = 100
-        _task_status.message = f"Done! {optimal_k} clusters in {elapsed:.1f}s"
-        print(f"[Cluster] Background: {optimal_k} clusters from {len(vectors)} embeddings in {elapsed:.2f}s")
-
-    except Exception as e:
-        _task_status.error = str(e)
-        _task_status.message = f"Error: {e}"
-        print(f"[Cluster] Background error: {e}")
-    finally:
-        _task_status.running = False
-
-
-def start_background_clustering():
-    """Start clustering in background if not already running."""
-    global _task_status
-    if _task_status.running:
-        return False
-    threading.Thread(target=_run_clustering_background, daemon=True).start()
-    return True
-
-
-def get_task_status() -> dict:
-    """Get current background task status."""
-    return {
-        "running": _task_status.running,
-        "task_name": _task_status.task_name,
-        "progress": _task_status.progress,
-        "message": _task_status.message,
-        "error": _task_status.error,
-    }
+    return similar_ids if similar_ids else [object_id]
 
 
 def get_cluster_for_point(object_id: int) -> list[int]:
     """
-    Get all point IDs in the same cluster as the given object_id.
+    Get all point IDs similar to the given object_id using Qdrant cosine similarity.
+    This replaces clustering - uses direct vector similarity search.
     """
-    clusters = cluster_embeddings()
-
-    if object_id not in clusters:
-        return []
-
-    target_cluster = clusters[object_id]
-    return [pid for pid, cluster in clusters.items() if cluster == target_cluster]
+    return get_similar_faces(object_id)
 
 
 def get_cluster_info() -> dict:
-    """Get clustering statistics."""
-    cluster_embeddings()  # Ensure clustering is done
+    """Get info about the similarity search method."""
+    client = get_qdrant_client()
+    try:
+        info = client.get_collection(QDRANT_COLLECTION)
+        total = info.points_count
+    except Exception:
+        total = 0
+
     return {
-        "n_clusters": _cluster_cache["n_clusters"],
-        "total_points": len(_cluster_cache["point_ids"]) if _cluster_cache["point_ids"] else 0,
+        "method": "Qdrant Cosine Similarity",
+        "threshold": SIMILARITY_THRESHOLD,
+        "total_points": total,
+    }
+
+
+def start_background_clustering():
+    """No-op for backwards compatibility. Qdrant similarity is instant."""
+    return True
+
+
+def get_task_status() -> dict:
+    """Return ready status - Qdrant similarity is instant, no background task needed."""
+    return {
+        "running": False,
+        "task_name": "",
+        "progress": 100,
+        "message": "Ready (Qdrant cosine similarity)",
+        "error": None,
+    }
+
+
+def cluster_embeddings(force_refresh: bool = False, background: bool = False) -> dict[int, int]:
+    """
+    Backwards compatibility function.
+    With Qdrant similarity, we don't pre-cluster - similarity is computed on-demand.
+    Returns empty dict since we use get_similar_faces() directly now.
+    """
+    return {}
+
+
+# ============== InsightFace Verification & Super Embeddings ==============
+
+# Thresholds for combining embeddings
+COMBINE_QDRANT_THRESHOLD = 0.3   # Loose - get candidates from Qdrant
+COMBINE_ARCFACE_THRESHOLD = 0.5  # Strict - verify with ArcFace
+
+
+def get_arcface_embedding(image_path: str) -> np.ndarray | None:
+    """Extract ArcFace embedding from an image using InsightFace."""
+    if not INSIGHTFACE_AVAILABLE:
+        return None
+
+    path = _resolve_photo_path(image_path)
+    if not path or not Path(path).exists():
+        return None
+
+    img = cv2.imread(path)
+    if img is None:
+        return None
+
+    try:
+        faces = _insightface_app.get(img)
+        if not faces:
+            return None
+        largest = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
+        emb = largest.embedding
+        return emb / np.linalg.norm(emb)
+    except Exception:
+        return None
+
+
+def arcface_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
+    """Compute cosine similarity between two ArcFace embeddings."""
+    return float(np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2)))
+
+
+def get_verified_similar_faces(object_id: int, main_image_path: str = None) -> list[int]:
+    """
+    Get similar faces verified with ArcFace.
+    1. Query Qdrant with loose threshold
+    2. Verify each candidate with ArcFace
+    3. Return only verified matches
+    """
+    if not INSIGHTFACE_AVAILABLE:
+        # Fall back to Qdrant-only
+        return get_similar_faces(object_id)
+
+    # Get main image embedding
+    if not main_image_path:
+        main_image_path = _get_image_path_for_object(object_id)
+
+    main_emb = get_arcface_embedding(main_image_path)
+    if main_emb is None:
+        return get_similar_faces(object_id)
+
+    # Get candidates from Qdrant (loose threshold)
+    client = get_qdrant_client()
+    points = client.retrieve(QDRANT_COLLECTION, ids=[object_id], with_vectors=True)
+    if not points:
+        return [object_id]
+
+    result = client.query_points(
+        collection_name=QDRANT_COLLECTION,
+        query=points[0].vector,
+        limit=100,
+        score_threshold=COMBINE_QDRANT_THRESHOLD,
+    )
+
+    candidates = [(p.id, p.score) for p in result.points if p.id != object_id]
+
+    # Verify each with ArcFace
+    verified = [object_id]
+    for cand_id, _ in candidates:
+        cand_path = _get_image_path_for_object(cand_id)
+        if not cand_path:
+            continue
+        cand_emb = get_arcface_embedding(cand_path)
+        if cand_emb is None:
+            continue
+
+        sim = arcface_similarity(main_emb, cand_emb)
+        if sim >= COMBINE_ARCFACE_THRESHOLD:
+            verified.append(cand_id)
+
+    return verified
+
+
+def _get_image_path_for_object(object_id: int) -> str | None:
+    """Get image path for a single object_id."""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT object_attributes->>'image_path'
+                FROM objects WHERE object_id = %s
+            """, (object_id,))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+
+def combine_to_super_embedding(object_id: int) -> dict:
+    """
+    Combine verified similar faces into a super embedding.
+    Updates the main object's embedding in Qdrant with the average.
+    Returns info about what was combined.
+    """
+    if not INSIGHTFACE_AVAILABLE:
+        return {"error": "InsightFace not available"}
+
+    main_path = _get_image_path_for_object(object_id)
+    main_emb = get_arcface_embedding(main_path)
+    if main_emb is None:
+        return {"error": "Could not extract main face embedding"}
+
+    # Get verified similar faces
+    verified_ids = get_verified_similar_faces(object_id, main_path)
+
+    if len(verified_ids) <= 1:
+        return {"object_id": object_id, "combined": 0, "message": "No similar faces found"}
+
+    # Collect all verified embeddings
+    embeddings = [main_emb]
+    combined_ids = []
+
+    for vid in verified_ids:
+        if vid == object_id:
+            continue
+        emb = get_arcface_embedding(_get_image_path_for_object(vid))
+        if emb is not None:
+            embeddings.append(emb)
+            combined_ids.append(vid)
+
+    # Create super embedding (average)
+    super_emb = np.mean(embeddings, axis=0)
+    super_emb = super_emb / np.linalg.norm(super_emb)
+
+    # Update in Qdrant
+    client = get_qdrant_client()
+    client.upsert(
+        collection_name=QDRANT_COLLECTION,
+        points=[PointStruct(id=object_id, vector=super_emb.tolist(), payload={})]
+    )
+
+    # Mark combined IDs as ignored
+    _mark_objects_ignored(combined_ids)
+
+    return {
+        "object_id": object_id,
+        "combined": len(embeddings),
+        "ignored": combined_ids,
+    }
+
+
+def _mark_objects_ignored(object_ids: list[int]):
+    """Mark object_ids as ignored in the database."""
+    if not object_ids:
+        return
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # Create table if not exists
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ignored_objects (
+                    object_id INTEGER PRIMARY KEY,
+                    created_at TIMESTAMP DEFAULT NOW()
+                )
+            """)
+            cur.execute("""
+                INSERT INTO ignored_objects (object_id)
+                SELECT unnest(%s::int[])
+                ON CONFLICT DO NOTHING
+            """, (object_ids,))
+        conn.commit()
+
+
+def combine_all_visitor_embeddings() -> dict:
+    """
+    Combine embeddings for all registered visitors.
+    Returns summary of operations.
+    """
+    visitors = get_visitors()
+    results = []
+
+    print(f"Combining embeddings for {len(visitors)} visitors...")
+
+    for name, object_id in visitors.items():
+        result = combine_to_super_embedding(object_id)
+        result["name"] = name
+        results.append(result)
+
+        if "error" not in result:
+            print(f"  {name}: Combined {result.get('combined', 0)} faces")
+        else:
+            print(f"  {name}: {result['error']}")
+
+    total_combined = sum(r.get("combined", 0) for r in results)
+    total_ignored = sum(len(r.get("ignored", [])) for r in results)
+
+    return {
+        "visitors_processed": len(visitors),
+        "faces_combined": total_combined,
+        "duplicates_ignored": total_ignored,
+        "details": results,
     }
 
 
@@ -896,13 +958,20 @@ def combine_embeddings(
     }
 
 
-def get_non_ignored_cluster_members(main_object_id: int) -> list[int]:
+def get_non_ignored_cluster_members(main_object_id: int, use_arcface: bool = True) -> list[int]:
     """
     Get all cluster members for main_object_id, excluding ignored ones.
     Returns list of object_ids that are NOT ignored.
+
+    If use_arcface=True and InsightFace is available, verifies each candidate
+    with ArcFace before including it.
     """
-    # Get all cluster members
-    cluster_members = get_cluster_for_point(main_object_id)
+    # Get cluster members - use ArcFace verification if available
+    if use_arcface and INSIGHTFACE_AVAILABLE:
+        main_path = _get_image_path_for_object(main_object_id)
+        cluster_members = get_verified_similar_faces(main_object_id, main_path)
+    else:
+        cluster_members = get_cluster_for_point(main_object_id)
 
     if not cluster_members:
         return []
@@ -938,7 +1007,8 @@ def create_gold_embedding(main_object_id: int) -> dict:
         dict with success status and details
     """
     # Get all non-ignored cluster members, excluding main
-    cluster_members = get_non_ignored_cluster_members(main_object_id)
+    # Use Qdrant-only (use_arcface=False) since images shown in modal already passed filtering
+    cluster_members = get_non_ignored_cluster_members(main_object_id, use_arcface=False)
     other_ids = [oid for oid in cluster_members if oid != main_object_id]
 
     if not other_ids:
@@ -1135,6 +1205,95 @@ def combine_cluster_to_main(main_object_id: int) -> dict:
     }
 
 
+def combine_selected_faces(main_object_id: int, selected_ids: list[int]) -> dict:
+    """
+    Combine only the user-selected faces into the main entry's embedding.
+
+    Args:
+        main_object_id: The registered entry ID (whose embedding will be updated)
+        selected_ids: List of object_ids selected by the user in the UI
+
+    Returns:
+        dict with success status and details
+    """
+    if not selected_ids:
+        return {"success": False, "error": "No faces selected to combine"}
+
+    # Get original main embedding
+    original_main = get_embedding_for_object(main_object_id)
+    if original_main is None:
+        return {"success": False, "error": "Could not retrieve main object's embedding"}
+
+    # Get embeddings for selected faces
+    embeddings = get_embeddings_for_objects(selected_ids)
+    if not embeddings:
+        return {"success": False, "error": "Could not retrieve embeddings for selected faces"}
+
+    # Calculate average of selected embeddings (Gold)
+    vectors = list(embeddings.values())
+    gold_embedding = np.mean(vectors, axis=0)
+
+    # Normalize
+    norm = np.linalg.norm(gold_embedding)
+    if norm > 0:
+        gold_embedding = gold_embedding / norm
+
+    # Calculate Perfect embedding: average of gold + original
+    perfect_embedding = np.mean([gold_embedding, original_main], axis=0)
+    norm = np.linalg.norm(perfect_embedding)
+    if norm > 0:
+        perfect_embedding = perfect_embedding / norm
+
+    # Update main object's embedding in Qdrant
+    client = get_qdrant_client()
+    try:
+        # Get existing payload
+        existing = client.retrieve(
+            collection_name=QDRANT_COLLECTION,
+            ids=[main_object_id],
+            with_payload=True,
+            with_vectors=False,
+        )
+        payload = existing[0].payload if existing else {}
+
+        # Store original embedding and mark as combined
+        payload["original_embedding"] = original_main.tolist()
+        payload["combined"] = True
+        payload["combined_count"] = len(selected_ids)
+
+        # Update with Perfect embedding
+        client.upsert(
+            collection_name=QDRANT_COLLECTION,
+            points=[
+                PointStruct(
+                    id=main_object_id,
+                    vector=perfect_embedding.tolist(),
+                    payload=payload,
+                )
+            ],
+        )
+
+        # Mark the combined images as ignored in PostgreSQL (so they don't show up anymore)
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for oid in selected_ids:
+                    cur.execute("""
+                        UPDATE objects
+                        SET object_attributes = object_attributes || '{"display_name": "ignored"}'::jsonb
+                        WHERE object_id = %s
+                    """, (oid,))
+                conn.commit()
+
+        return {
+            "success": True,
+            "object_id": main_object_id,
+            "combined_count": len(selected_ids),
+            "message": f"Combined {len(selected_ids)} selected face(s) into main entry"
+        }
+    except Exception as e:
+        return {"success": False, "error": f"Failed to update embedding: {str(e)}"}
+
+
 # ============== FastAPI Web Application ==============
 
 app = FastAPI(title="Visitor Face Clustering Utility")
@@ -1254,11 +1413,8 @@ def _get_all_image_paths() -> dict[int, str]:
 
 
 def _is_clustering_ready() -> bool:
-    """Check if cluster cache is available (memory or disk)."""
-    if _cluster_cache["labels"] is not None:
-        return True
-    # Try loading from disk without running clustering
-    return _load_cache_from_disk()
+    """Always ready - Qdrant similarity is computed on-demand."""
+    return True
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1294,29 +1450,15 @@ async def dashboard(request: Request, refresh: bool = False, sort: str = "simila
     ignored_ids = _get_all_ignored_ids()
     all_image_paths = _get_all_image_paths()
 
-    # Pre-load cluster assignments once (from cache, no blocking)
-    all_clusters = cluster_embeddings()
-
-    # Pre-load frontal cache
-    _load_frontal_cache()
-
-    print(f"[Dashboard] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths, {len(_frontal_cache)} frontal in {time.time() - start_time:.2f}s")
-
-    # Build reverse cluster lookup: cluster_label -> list of point_ids
-    cluster_to_points = {}
-    for pid, label in all_clusters.items():
-        if label not in cluster_to_points:
-            cluster_to_points[label] = []
-        cluster_to_points[label].append(pid)
+    print(f"[Dashboard] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths in {time.time() - start_time:.2f}s")
 
     visitor_data = []
     for name, object_id in visitors.items():
         # Use batch-loaded image path instead of DB query
         details = {"image_path": all_image_paths.get(object_id)}
 
-        # Get all points in the same cluster as this visitor (from pre-loaded data)
-        my_cluster = all_clusters.get(object_id)
-        similar_ids = cluster_to_points.get(my_cluster, []) if my_cluster is not None else []
+        # Get similar faces using Qdrant cosine similarity
+        similar_ids = get_similar_faces(object_id)
 
         # Count total valid cluster members (excluding self, ignored)
         total_valid = sum(1 for pid in similar_ids if pid != object_id and pid not in ignored_ids and pid in all_image_paths)
@@ -1333,7 +1475,7 @@ async def dashboard(request: Request, refresh: bool = False, sort: str = "simila
             else:
                 main_image = "/" + PHOTOS_PREFIX + "/" + img_path
 
-        # Get preview images (top 4 for card display - no frontal check for speed)
+        # Get preview images (top 4 for card display)
         preview_images = []
         for pid in similar_ids:
             if len(preview_images) >= 4:
@@ -1346,6 +1488,11 @@ async def dashboard(request: Request, refresh: bool = False, sort: str = "simila
             img_path = all_image_paths.get(pid)
             if not img_path:
                 continue
+
+            # Filter by frontal check (only show frontal faces) - if enabled
+            if FACE_FILTER_CONFIG.get("enabled", True):
+                if not check_frontal(img_path):
+                    continue
 
             # Normalize path to URL format
             if img_path.startswith(PHOTOS_PREFIX):
@@ -1411,11 +1558,8 @@ async def api_cluster_images(object_id: int, frontal_only: bool = True):
     # Batch-load data
     ignored_ids = _get_all_ignored_ids()
     all_image_paths = _get_all_image_paths()
-    _load_frontal_cache()
 
     images = []
-    frontal_checked = 0
-    frontal_passed = 0
     frontal_check_enabled = FACE_FILTER_CONFIG.get("enabled", False) and frontal_only
 
     for pid in similar_ids:
@@ -1430,10 +1574,8 @@ async def api_cluster_images(object_id: int, frontal_only: bool = True):
 
         # Apply frontal check if enabled
         if frontal_check_enabled:
-            frontal_checked += 1
-            if not is_frontal_cached(pid, img_path):
+            if not check_frontal(img_path):
                 continue
-            frontal_passed += 1
 
         # Normalize path to URL format
         if img_path.startswith(PHOTOS_PREFIX):
@@ -1443,7 +1585,7 @@ async def api_cluster_images(object_id: int, frontal_only: bool = True):
         images.append({"id": pid, "path": img_path})
 
     elapsed = time.time() - start_time
-    print(f"[ClusterImages] object={object_id}, total={len(similar_ids)}, checked={frontal_checked}, passed={frontal_passed}, returned={len(images)} in {elapsed:.2f}s")
+    print(f"[ClusterImages] object={object_id}, total={len(similar_ids)}, returned={len(images)} in {elapsed:.2f}s")
 
     return {
         "object_id": object_id,
@@ -1526,20 +1668,48 @@ async def api_ignore(request: Request):
 @app.post("/api/combine")
 async def api_combine(request: Request):
     """
-    Combine all cluster faces into the main registered entry.
-    This does Gold + Perfect in one step.
+    Combine selected cluster faces into the main registered entry.
+    Uses the selected_ids from the frontend instead of re-querying.
     """
     try:
         data = await request.json()
         registered_object_id = data.get("registered_object_id")
+        selected_ids = data.get("selected_ids", [])
 
         if not registered_object_id:
             return {"success": False, "error": "registered_object_id is required"}
 
-        result = combine_cluster_to_main(registered_object_id)
+        if not selected_ids:
+            return {"success": False, "error": "No faces selected to combine"}
+
+        result = combine_selected_faces(registered_object_id, selected_ids)
         return result
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.post("/api/combine-all")
+async def api_combine_all():
+    """
+    Combine embeddings for ALL registered visitors.
+    Uses InsightFace ArcFace verification before combining.
+    """
+    try:
+        result = combine_all_visitor_embeddings()
+        return {"success": True, **result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/api/insightface-status")
+async def api_insightface_status():
+    """Check if InsightFace is available."""
+    return {
+        "available": INSIGHTFACE_AVAILABLE,
+        "model": "buffalo_s" if INSIGHTFACE_AVAILABLE else None,
+        "qdrant_threshold": COMBINE_QDRANT_THRESHOLD,
+        "arcface_threshold": COMBINE_ARCFACE_THRESHOLD,
+    }
 
 
 if __name__ == "__main__":

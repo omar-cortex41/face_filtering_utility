@@ -14,23 +14,20 @@ photos:
   # DB paths are stored as "photos/unknown/..." matching this directory
   directory: photos
 
-# Frontal face filter settings (MediaPipe)
+# Frontal face filter settings (uses MediaPipe Face Mesh)
 face_filter:
   enabled: true
-  # Yaw thresholds: face is frontal if yaw is between these values
-  # Positive = looking right, Negative = looking left
-  # Stricter = fewer side profiles pass (0.20 = ~20 degrees)
-  yaw_max: 0.20        # Max yaw to right (strict)
-  yaw_min: -0.20       # Max yaw to left (strict)
-  # Pitch thresholds (optional, not strictly enforced for now)
-  pitch_max: 0.30      # Max pitch up
-  pitch_min: -0.30     # Max pitch down
-  # Detection confidence - higher = must detect face clearly
-  min_detection_confidence: 0.50
-  # Blur threshold (Laplacian variance - higher = sharper)
-  blur_min: 5.0
 
-# Clustering settings (K-Means)
-clustering:
-  # K-Means auto-detects optimal K using silhouette score
-  # min_k and max_k are determined automatically based on data
+  # MediaPipe Face Mesh head pose settings (values in degrees)
+  mediapipe:
+    yaw_max: 30                      # Max head turn left/right (degrees) - relaxed for office cams
+    pitch_max: 25                    # Max head tilt up/down (degrees) - relaxed for office cams
+    min_detection_confidence: 0.5    # Face detection confidence threshold
+
+  # Quality filter
+  blur_min: 5.0          # Blur threshold (Laplacian variance - higher = sharper)
+
+# Similarity search settings (Qdrant cosine similarity)
+# InsightFace 512D embeddings: same person ~0.4-0.7, different person ~0.1-0.3
+similarity:
+  threshold: 0.28

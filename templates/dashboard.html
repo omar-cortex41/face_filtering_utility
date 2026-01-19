@@ -43,6 +43,17 @@
         .header-icon:hover { background: var(--bg-card); }
         .header-icon svg { width: 20px; height: 20px; color: var(--text-secondary); }
 
+        /* Search box */
+        .search-box { display: flex; align-items: center; gap: 8px; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 8px 14px; transition: border-color 0.2s; }
+        .search-box:focus-within { border-color: var(--accent-blue); }
+        .search-box svg { width: 18px; height: 18px; color: var(--text-secondary); flex-shrink: 0; }
+        .search-box input { background: transparent; border: none; outline: none; color: var(--text-primary); font-size: 14px; width: 200px; }
+        .search-box input::placeholder { color: var(--text-secondary); }
+        .search-clear { background: none; border: none; cursor: pointer; padding: 2px; display: none; }
+        .search-clear svg { width: 16px; height: 16px; color: var(--text-secondary); }
+        .search-clear:hover svg { color: var(--text-primary); }
+        .search-box.has-value .search-clear { display: block; }
+
         /* Controls bar */
         .controls-bar { background: var(--bg-sidebar); padding: 12px 24px; display: flex; align-items: center; gap: 16px; border-bottom: 1px solid var(--border-color); }
         .controls-bar .label { color: var(--text-secondary); font-size: 13px; }
@@ -114,11 +125,11 @@
         .modal-section { margin-bottom: 20px; }
         .modal-section-title { font-size: 12px; color: var(--text-secondary); margin-bottom: 12px; text-transform: uppercase; letter-spacing: 0.5px; }
         .modal-faces { display: flex; flex-wrap: wrap; gap: 10px; }
-        .modal-face { position: relative; }
-        .modal-face img { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; border: 3px solid transparent; cursor: pointer; transition: all 0.2s; }
-        .modal-face img:hover { border-color: var(--accent-blue); }
+        .modal-face { position: relative; cursor: pointer; }
+        .modal-face img { width: 80px; height: 80px; border-radius: 8px; object-fit: cover; border: 3px solid transparent; transition: all 0.2s; pointer-events: none; }
+        .modal-face:hover img { border-color: var(--accent-blue); }
         .modal-face.selected img { border-color: var(--accent-teal); }
-        .modal-face .check { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; background: var(--accent-teal); border-radius: 50%; display: none; align-items: center; justify-content: center; }
+        .modal-face .check { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; background: var(--accent-teal); border-radius: 50%; display: none; align-items: center; justify-content: center; pointer-events: none; }
         .modal-face.selected .check { display: flex; }
         .modal-face .check svg { width: 14px; height: 14px; color: white; }
         .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border-color); }
@@ -185,6 +196,19 @@
         <!-- Top header -->
         <header class="top-header">
             <h1>Visitor Face Clustering Utility</h1>
+            <div class="header-actions">
+                <div class="search-box" id="search-box">
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                    <input type="text" id="search-input" placeholder="Search visitors..." oninput="filterVisitors(this.value)">
+                    <button class="search-clear" onclick="clearSearch()">
+                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+                        </svg>
+                    </button>
+                </div>
+            </div>
         </header>
 
         <!-- Controls bar -->
@@ -290,7 +314,7 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn-combine" id="btn-combine" onclick="combineAll()">COMBINE ALL</button>
+                <button class="btn-combine" id="btn-combine" onclick="combineAll()" disabled>COMBINE SELECTED</button>
             </div>
         </div>
     </div>
@@ -332,6 +356,37 @@
         };
 
         let progressPollInterval = null;
+
+        // Search/filter functionality
+        function filterVisitors(query) {
+            const searchBox = document.getElementById('search-box');
+            const cards = document.querySelectorAll('.cluster-card');
+            const q = query.toLowerCase().trim();
+
+            // Toggle clear button visibility
+            if (q) {
+                searchBox.classList.add('has-value');
+            } else {
+                searchBox.classList.remove('has-value');
+            }
+
+            // Filter cards
+            cards.forEach(card => {
+                const name = card.querySelector('.cluster-title')?.textContent.toLowerCase() || '';
+                if (!q || name.includes(q)) {
+                    card.style.display = '';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        }
+
+        function clearSearch() {
+            const input = document.getElementById('search-input');
+            input.value = '';
+            filterVisitors('');
+            input.focus();
+        }
 
         function changeSort(value) {
             window.location.href = '/?sort=' + value;
@@ -497,10 +552,10 @@
                 const response = await fetch(`/api/cluster-images/${currentVisitorData.object_id}`);
                 const data = await response.json();
 
-                // Update modal-section-title with count
+                // Update modal-section-title with count (preserve the span for selection count)
                 const sectionTitle = document.querySelector('#modal-faces').previousElementSibling;
                 if (sectionTitle && sectionTitle.classList.contains('modal-section-title')) {
-                    sectionTitle.textContent = `DETECTED FACES (${data.images.length} ${data.frontal_filter_enabled ? 'frontal' : 'total'})`;
+                    sectionTitle.innerHTML = `DETECTED FACES (${data.images.length} ${data.frontal_filter_enabled ? 'frontal' : 'total'}) - <span id="modal-count">0</span> selected`;
                 }
 
                 // Store images in currentVisitorData for later use
@@ -530,6 +585,9 @@
         }
 
         function toggleFaceSelection(id) {
+            // Ensure id is a number for consistent comparison
+            id = Number(id);
+
             if (selectedIds.has(id)) {
                 selectedIds.delete(id);
             } else {
@@ -541,6 +599,7 @@
                 faceEl.classList.toggle('selected', selectedIds.has(id));
             }
             updateSelectionCount();
+            console.log('Selected IDs:', Array.from(selectedIds));
         }
 
         function updateSelectionCount() {
@@ -552,7 +611,11 @@
 
         async function ignoreSelected() {
             const ids = Array.from(selectedIds);
-            if (ids.length === 0) return;
+            console.log('Ignoring IDs:', ids);
+            if (ids.length === 0) {
+                showToast('No faces selected', 'warning');
+                return;
+            }
 
             try {
                 const response = await fetch('/api/ignore', {
@@ -572,9 +635,15 @@
                             const el = document.querySelector(`#modal-faces .modal-face[data-id="${id}"]`);
                             if (el) el.remove();
                             selectedIds.delete(id);
-                            // Also remove from data
-                            const idx = currentVisitorData.similar_images.findIndex(img => img.id === id);
-                            if (idx > -1) currentVisitorData.similar_images.splice(idx, 1);
+                            // Also remove from data (check both arrays)
+                            if (currentVisitorData.all_images) {
+                                const idx = currentVisitorData.all_images.findIndex(img => img.id === id);
+                                if (idx > -1) currentVisitorData.all_images.splice(idx, 1);
+                            }
+                            if (currentVisitorData.similar_images) {
+                                const idx = currentVisitorData.similar_images.findIndex(img => img.id === id);
+                                if (idx > -1) currentVisitorData.similar_images.splice(idx, 1);
+                            }
                         }
                     });
                     updateSelectionCount();
@@ -587,13 +656,13 @@
         }
 
         async function combineAll() {
-            const remaining = currentVisitorData.similar_images.length;
-            if (remaining === 0) {
-                showToast('No faces to combine', 'warning');
+            const selectedCount = selectedIds.size;
+            if (selectedCount === 0) {
+                showToast('No faces selected to combine', 'warning');
                 return;
             }
 
-            if (!confirm(`Combine all ${remaining} faces into the main entry?\n\nThis will merge their embeddings and remove them from the cluster.`)) return;
+            if (!confirm(`Combine ${selectedCount} selected face(s) into the main entry?\n\nThis will merge their embeddings.`)) return;
 
             const btn = document.getElementById('btn-combine');
             btn.disabled = true;
@@ -603,7 +672,10 @@
                 const response = await fetch('/api/combine', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ registered_object_id: currentVisitorId })
+                    body: JSON.stringify({
+                        registered_object_id: currentVisitorId,
+                        selected_ids: Array.from(selectedIds)
+                    })
                 });
 
                 const result = await response.json();
@@ -614,12 +686,12 @@
                 } else {
                     showToast('Error: ' + result.error, 'error');
                     btn.disabled = false;
-                    btn.textContent = 'COMBINE ALL';
+                    btn.textContent = 'COMBINE SELECTED';
                 }
             } catch (err) {
                 showToast('Error: ' + err.message, 'error');
                 btn.disabled = false;
-                btn.textContent = 'COMBINE ALL';
+                btn.textContent = 'COMBINE SELECTED';
             }
         }
 
