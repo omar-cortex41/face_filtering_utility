@@ -10,23 +10,25 @@ qdrant:
   collection: visitor_embeddings_office
 
 photos:
-  directory: albania_photos
+  # Directory where photos are stored (standard: "photos")
+  # DB paths are stored as "photos/unknown/..." matching this directory
+  directory: photos
 
 # Frontal face filter settings (MediaPipe)
 face_filter:
-  enabled: false
+  enabled: true
   # Yaw thresholds: face is frontal if yaw is between these values
   # Positive = looking right, Negative = looking left
-  # More relaxed values = more faces pass through
-  yaw_max: 0.40        # Max yaw to right (relaxed from 0.25)
-  yaw_min: -0.40       # Max yaw to left (relaxed from -0.25)
+  # Stricter = fewer side profiles pass (0.20 = ~20 degrees)
+  yaw_max: 0.20        # Max yaw to right (strict)
+  yaw_min: -0.20       # Max yaw to left (strict)
   # Pitch thresholds (optional, not strictly enforced for now)
   pitch_max: 0.30      # Max pitch up
   pitch_min: -0.30     # Max pitch down
-  # Detection confidence
-  min_detection_confidence: 0.20
+  # Detection confidence - higher = must detect face clearly
+  min_detection_confidence: 0.50
   # Blur threshold (Laplacian variance - higher = sharper)
-  blur_min: 2.0
+  blur_min: 5.0
 
 # Clustering settings (K-Means)
 clustering:

@@ -1,0 +1,20 @@
+# Web framework
+fastapi
+uvicorn
+jinja2
+
+# Database
+psycopg2-binary
+
+# Machine learning and clustering
+numpy
+scikit-learn
+qdrant-client
+
+# Computer vision
+opencv-python
+mediapipe
+
+# Configuration
+pyyaml
+
