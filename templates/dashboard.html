@@ -214,37 +214,30 @@
         <!-- Controls bar -->
         <div class="controls-bar">
             <span class="label">Sort by:</span>
-            <select class="dropdown" id="sort-select" onchange="changeSort(this.value)" {% if loading %}disabled{% endif %}>
+            <select class="dropdown" id="sort-select" onchange="changeSort(this.value)">
                 <option value="similarity" {% if current_sort == 'similarity' %}selected{% endif %}>Cluster Size</option>
                 <option value="alphabetic" {% if current_sort == 'alphabetic' %}selected{% endif %}>Alphabetic</option>
             </select>
             <div class="cluster-stats">
-                {% if loading %}
-                <div class="stat">
-                    <span class="stat-label" style="color: var(--accent-blue);">Clustering in progress...</span>
-                </div>
-                {% else %}
                 <div class="stat">
                     <span class="stat-label">Clusters:</span>
-                    <span class="stat-value">{{ cluster_info.n_clusters }}</span>
+                    <span class="stat-value" id="stat-clusters">{{ cluster_info.n_clusters }}</span>
                 </div>
                 <div class="stat">
                     <span class="stat-label">Total Faces:</span>
-                    <span class="stat-value">{{ cluster_info.total_points }}</span>
+                    <span class="stat-value" id="stat-faces">{{ cluster_info.total_points }}</span>
                 </div>
-                <button class="btn-recluster" onclick="refreshClusters()" id="refresh-btn">Re-cluster</button>
-                {% endif %}
+                <button class="btn-recluster" onclick="reloadFaces()" id="refresh-btn">Reload Faces</button>
             </div>
         </div>
 
         <!-- Clusters grid -->
         <div class="clusters-container">
-            {% if loading %}
-            <!-- Initial loading state -->
+            <!-- Loading state (shown initially) -->
             <div class="loading-container" id="initial-loading">
                 <div class="loading-spinner"></div>
-                <div class="loading-title">Loading Clusters</div>
-                <div class="loading-message" id="loading-message">Initializing clustering engine...</div>
+                <div class="loading-title">Loading Faces</div>
+                <div class="loading-message" id="loading-message">Fetching visitor data...</div>
                 <div class="loading-progress-container">
                     <div class="loading-progress-bg">
                         <div class="loading-progress-fill" id="loading-progress-bar" style="width: 0%"></div>
@@ -252,39 +245,8 @@
                     <div class="loading-percent" id="loading-percent">0%</div>
                 </div>
             </div>
-            {% else %}
-            <div class="clusters-grid">
-                {% for visitor in visitors %}
-                <div class="cluster-card" data-visitor-id="{{ visitor.object_id }}" onclick="openClusterModal({{ visitor.object_id }})">
-                    <div class="cluster-header">
-                        <span class="cluster-name">Cluster: {{ visitor.name }}</span>
-                        <div class="cluster-menu" onclick="event.stopPropagation()">
-                            <svg viewBox="0 0 24 24" fill="currentColor">
-                                <circle cx="12" cy="5" r="2"/>
-                                <circle cx="12" cy="12" r="2"/>
-                                <circle cx="12" cy="19" r="2"/>
-                            </svg>
-                        </div>
-                    </div>
-                    <div class="cluster-faces">
-                        {% if visitor.main_image %}
-                        <img src="{{ visitor.main_image }}" alt="{{ visitor.name }}" class="face-thumb main" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">
-                        {% endif %}
-                        {% for img in visitor.similar_images[:4] %}
-                        {% if img.path %}
-                        <img src="{{ img.path }}" alt="Face" class="face-thumb" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">
-                        {% else %}
-                        <div class="face-placeholder">No img</div>
-                        {% endif %}
-                        {% endfor %}
-                        {% if visitor.similar_count > 4 %}
-                        <div class="more-faces">+{{ visitor.similar_count - 4 }}</div>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-            {% endif %}
+            <!-- Grid (hidden until loaded) -->
+            <div class="clusters-grid" id="clusters-grid" style="display: none;"></div>
         </div>
     </main>
 
@@ -314,7 +276,7 @@
                 </div>
             </div>
             <div class="modal-footer">
-                <button class="btn-combine" id="btn-combine" onclick="combineAll()" disabled>COMBINE SELECTED</button>
+                <button class="btn-combine" id="btn-combine" onclick="combineAll()">COMBINE REMAINING</button>
             </div>
         </div>
     </div>
@@ -339,21 +301,124 @@
         let currentVisitorData = null;
         let selectedIds = new Set();
 
-        // Visitor data from server (embedded in page)
-        const visitorsData = {
-            {% for visitor in visitors %}
-            {{ visitor.object_id }}: {
-                object_id: {{ visitor.object_id }},
-                name: "{{ visitor.name }}",
-                main_image: "{{ visitor.main_image or '' }}",
-                similar_images: [
-                    {% for img in visitor.similar_images %}
-                    { id: {{ img.id }}, path: "{{ img.path or '' }}" },
-                    {% endfor %}
-                ]
-            },
-            {% endfor %}
-        };
+        // Visitor data - loaded async
+        let visitorsData = {};
+        let isLoadingFaces = false;
+
+        // Load faces on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadFaces();
+        });
+
+        async function loadFaces() {
+            if (isLoadingFaces) return;
+            isLoadingFaces = true;
+
+            const loadingEl = document.getElementById('initial-loading');
+            const gridEl = document.getElementById('clusters-grid');
+            const progressBar = document.getElementById('loading-progress-bar');
+            const progressPercent = document.getElementById('loading-percent');
+            const loadingMessage = document.getElementById('loading-message');
+            const refreshBtn = document.getElementById('refresh-btn');
+
+            // Show loading, hide grid
+            loadingEl.style.display = 'flex';
+            gridEl.style.display = 'none';
+            if (refreshBtn) refreshBtn.disabled = true;
+
+            // Animate progress bar to show activity
+            progressBar.style.width = '20%';
+            progressPercent.textContent = 'Loading...';
+            loadingMessage.textContent = 'Fetching visitor data...';
+
+            try {
+                const sort = document.getElementById('sort-select')?.value || 'similarity';
+                const response = await fetch(`/api/visitors-data?sort=${sort}`);
+
+                progressBar.style.width = '80%';
+                loadingMessage.textContent = 'Rendering faces...';
+
+                const data = await response.json();
+
+                // Build visitorsData lookup
+                visitorsData = {};
+                data.visitors.forEach(v => {
+                    visitorsData[v.object_id] = v;
+                });
+
+                // Render grid
+                renderVisitorGrid(data.visitors);
+
+                progressBar.style.width = '100%';
+                progressPercent.textContent = 'Done!';
+
+                // Hide loading, show grid
+                setTimeout(() => {
+                    loadingEl.style.display = 'none';
+                    gridEl.style.display = 'grid';
+                    if (refreshBtn) refreshBtn.disabled = false;
+                    isLoadingFaces = false;
+                }, 300);
+
+            } catch (err) {
+                console.error('Failed to load faces:', err);
+                loadingMessage.textContent = 'Error loading faces. Please refresh.';
+                progressBar.style.width = '0%';
+                progressPercent.textContent = 'Error';
+                if (refreshBtn) refreshBtn.disabled = false;
+                isLoadingFaces = false;
+            }
+        }
+
+        function renderVisitorGrid(visitors) {
+            const gridEl = document.getElementById('clusters-grid');
+            gridEl.innerHTML = '';
+
+            visitors.forEach(visitor => {
+                const card = document.createElement('div');
+                card.className = 'cluster-card';
+                card.dataset.visitorId = visitor.object_id;
+                card.onclick = () => openClusterModal(visitor.object_id);
+
+                let facesHtml = '';
+                if (visitor.main_image) {
+                    facesHtml += `<img src="${visitor.main_image}" alt="${visitor.name}" class="face-thumb main" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">`;
+                }
+
+                const previewImages = visitor.similar_images.slice(0, 4);
+                previewImages.forEach(img => {
+                    if (img.path) {
+                        facesHtml += `<img src="${img.path}" alt="Face" class="face-thumb" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">`;
+                    } else {
+                        facesHtml += `<div class="face-placeholder">No img</div>`;
+                    }
+                });
+
+                if (visitor.similar_count > 4) {
+                    facesHtml += `<div class="more-faces">+${visitor.similar_count - 4}</div>`;
+                }
+
+                card.innerHTML = `
+                    <div class="cluster-header">
+                        <span class="cluster-name cluster-title">Cluster: ${visitor.name}</span>
+                        <div class="cluster-menu" onclick="event.stopPropagation()">
+                            <svg viewBox="0 0 24 24" fill="currentColor">
+                                <circle cx="12" cy="5" r="2"/>
+                                <circle cx="12" cy="12" r="2"/>
+                                <circle cx="12" cy="19" r="2"/>
+                            </svg>
+                        </div>
+                    </div>
+                    <div class="cluster-faces">${facesHtml}</div>
+                `;
+
+                gridEl.appendChild(card);
+            });
+        }
+
+        function reloadFaces() {
+            loadFaces();
+        }
 
         let progressPollInterval = null;
 
@@ -445,84 +510,10 @@
             }
         }
 
+        // refreshClusters is now just a wrapper for reloadFaces
         async function refreshClusters() {
-            const btn = document.getElementById('refresh-btn');
-            btn.disabled = true;
-            btn.textContent = 'Starting...';
-
-            try {
-                const response = await fetch('/api/refresh-clusters', { method: 'POST' });
-                const result = await response.json();
-
-                if (result.success) {
-                    // Start polling for progress
-                    showProgress(true);
-                    updateProgress({ task_name: 'clustering', message: 'Starting...', progress: 0 });
-                    progressPollInterval = setInterval(pollTaskStatus, 500);
-                } else {
-                    showToast(result.message || 'Already in progress', 'warning');
-                    btn.disabled = false;
-                    btn.textContent = 'Re-cluster';
-                }
-            } catch (err) {
-                showToast('Error: ' + err.message, 'error');
-                btn.disabled = false;
-                btn.textContent = 'Re-cluster';
-            }
+            reloadFaces();
         }
-
-        // Check if we're in initial loading state (no clusters yet)
-        const isInitialLoading = {{ 'true' if loading else 'false' }};
-
-        function updateInitialLoadingProgress(data) {
-            const progressBar = document.getElementById('loading-progress-bar');
-            const percentEl = document.getElementById('loading-percent');
-            const messageEl = document.getElementById('loading-message');
-
-            if (progressBar) progressBar.style.width = data.progress + '%';
-            if (percentEl) percentEl.textContent = data.progress + '%';
-            if (messageEl) messageEl.textContent = data.message || 'Processing...';
-        }
-
-        async function pollInitialLoading() {
-            try {
-                const response = await fetch('/api/task-status');
-                const data = await response.json();
-
-                if (data.running) {
-                    updateInitialLoadingProgress(data);
-                } else if (data.progress === 100 || !data.running) {
-                    // Clustering complete - reload the page
-                    updateInitialLoadingProgress({ progress: 100, message: 'Complete! Loading dashboard...' });
-                    setTimeout(() => window.location.reload(), 500);
-                }
-            } catch (err) {
-                console.error('Poll error:', err);
-            }
-        }
-
-        // Check on page load if a task is running
-        (async function checkInitialStatus() {
-            try {
-                const response = await fetch('/api/task-status');
-                const data = await response.json();
-
-                if (isInitialLoading) {
-                    // We're in initial loading state - poll for clustering progress
-                    updateInitialLoadingProgress(data);
-                    setInterval(pollInitialLoading, 500);
-                } else if (data.running) {
-                    // Normal re-clustering in progress
-                    document.getElementById('refresh-btn').disabled = true;
-                    document.getElementById('refresh-btn').textContent = 'Running...';
-                    showProgress(true);
-                    updateProgress(data);
-                    progressPollInterval = setInterval(pollTaskStatus, 500);
-                }
-            } catch (err) {
-                console.error('Initial status check error:', err);
-            }
-        })();
 
         async function openClusterModal(visitorId) {
             currentVisitorId = visitorId;
@@ -570,11 +561,12 @@
                         : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`
                 ).join('');
                 document.getElementById('modal-faces').innerHTML = facesHtml || '<div style="color: var(--text-secondary);">No similar faces found</div>';
+
+                // Update button states now that we have images
+                updateSelectionCount();
             } catch (err) {
                 document.getElementById('modal-faces').innerHTML = '<div style="color: #dc2626;">Error loading faces: ' + err.message + '</div>';
             }
-
-            updateSelectionCount();
         }
 
         function closeModal() {
@@ -606,7 +598,11 @@
             const count = selectedIds.size;
             document.getElementById('modal-count').textContent = count;
             document.getElementById('btn-ignore').disabled = count === 0;
-            document.getElementById('btn-combine').disabled = count === 0;
+
+            // Combine button: enabled when there are remaining faces (not all selected)
+            const allImages = currentVisitorData?.all_images || currentVisitorData?.similar_images || [];
+            const remainingCount = allImages.length - count;
+            document.getElementById('btn-combine').disabled = remainingCount === 0;
         }
 
         async function ignoreSelected() {
@@ -656,13 +652,27 @@
         }
 
         async function combineAll() {
-            const selectedCount = selectedIds.size;
-            if (selectedCount === 0) {
-                showToast('No faces selected to combine', 'warning');
+            // Get all face IDs from the modal (excluding main image)
+            const allImages = currentVisitorData.all_images || currentVisitorData.similar_images || [];
+            const allIds = allImages.map(img => img.id);
+
+            // Remaining = all faces minus selected (selected will be ignored)
+            const remainingIds = allIds.filter(id => !selectedIds.has(id));
+
+            if (remainingIds.length === 0) {
+                showToast('No faces remaining to combine (all selected for ignore)', 'warning');
                 return;
             }
 
-            if (!confirm(`Combine ${selectedCount} selected face(s) into the main entry?\n\nThis will merge their embeddings.`)) return;
+            const ignoreCount = selectedIds.size;
+            const combineCount = remainingIds.length;
+
+            let confirmMsg = `Combine ${combineCount} face(s) into the main entry?`;
+            if (ignoreCount > 0) {
+                confirmMsg += `\n\n${ignoreCount} selected face(s) will be ignored.`;
+            }
+
+            if (!confirm(confirmMsg)) return;
 
             const btn = document.getElementById('btn-combine');
             btn.disabled = true;
@@ -674,7 +684,8 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         registered_object_id: currentVisitorId,
-                        selected_ids: Array.from(selectedIds)
+                        combine_ids: remainingIds,
+                        ignore_ids: Array.from(selectedIds)
                     })
                 });
 
@@ -682,16 +693,16 @@
                 if (result.success) {
                     showToast(result.message, 'success');
                     closeModal();
-                    setTimeout(() => window.location.reload(), 1000);
+                    setTimeout(() => reloadFaces(), 1000);
                 } else {
                     showToast('Error: ' + result.error, 'error');
                     btn.disabled = false;
-                    btn.textContent = 'COMBINE SELECTED';
+                    btn.textContent = 'COMBINE REMAINING';
                 }
             } catch (err) {
                 showToast('Error: ' + err.message, 'error');
                 btn.disabled = false;
-                btn.textContent = 'COMBINE SELECTED';
+                btn.textContent = 'COMBINE REMAINING';
             }
         }
 

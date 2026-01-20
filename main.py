@@ -1412,62 +1412,42 @@ def _get_all_image_paths() -> dict[int, str]:
     return paths
 
 
-def _is_clustering_ready() -> bool:
-    """Always ready - Qdrant similarity is computed on-demand."""
-    return True
-
-
 @app.get("/", response_class=HTMLResponse)
-async def dashboard(request: Request, refresh: bool = False, sort: str = "similarity"):
-    """Main dashboard page using K-means clustering."""
-    start_time = time.time()
-
-    # Refresh clusters if requested (in background)
-    if refresh:
-        start_background_clustering()
-
-    # Check if clustering is ready - if not, start it and show loading state
-    clustering_ready = _is_clustering_ready()
-
-    if not clustering_ready:
-        # Start background clustering if not already running
-        if not _task_status.running:
-            start_background_clustering()
-
-        # Return loading page
-        return templates.TemplateResponse("dashboard.html", {
-            "request": request,
-            "visitors": [],
-            "cluster_info": {"n_clusters": 0, "total_points": 0},
-            "current_sort": sort,
-            "loading": True,  # Flag for template to show loading state
-        })
-
-    visitors = get_visitors()
+async def dashboard(request: Request, sort: str = "similarity"):
+    """Main dashboard page - loads immediately, faces load async via API."""
     cluster_info = get_cluster_info()
 
-    # Batch-load data for performance (single DB queries instead of thousands)
+    return templates.TemplateResponse("dashboard.html", {
+        "request": request,
+        "cluster_info": cluster_info,
+        "current_sort": sort,
+    })
+
+@app.get("/api/visitors-data")
+async def api_visitors_data(sort: str = "similarity"):
+    """API endpoint to get all visitor data for the dashboard (async loading)."""
+    import time
+    start_time = time.time()
+
+    visitors = get_visitors()
+
+    # Batch-load data for performance
     ignored_ids = _get_all_ignored_ids()
     all_image_paths = _get_all_image_paths()
 
-    print(f"[Dashboard] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths in {time.time() - start_time:.2f}s")
+    print(f"[API] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths in {time.time() - start_time:.2f}s")
 
     visitor_data = []
-    for name, object_id in visitors.items():
-        # Use batch-loaded image path instead of DB query
-        details = {"image_path": all_image_paths.get(object_id)}
 
-        # Get similar faces using Qdrant cosine similarity
+    for name, object_id in visitors.items():
+        details = {"image_path": all_image_paths.get(object_id)}
         similar_ids = get_similar_faces(object_id)
 
-        # Count total valid cluster members (excluding self, ignored)
         total_valid = sum(1 for pid in similar_ids if pid != object_id and pid not in ignored_ids and pid in all_image_paths)
 
-        # Get main image
         main_image = None
         if details and details.get("image_path"):
             img_path = details["image_path"]
-            # Convert DB path prefix to URL prefix
             if img_path.startswith(PHOTOS_PREFIX + "/"):
                 main_image = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
             elif img_path.startswith("/" + PHOTOS_PREFIX + "/"):
@@ -1475,26 +1455,21 @@ async def dashboard(request: Request, refresh: bool = False, sort: str = "simila
             else:
                 main_image = "/" + PHOTOS_PREFIX + "/" + img_path
 
-        # Get preview images (top 4 for card display)
         preview_images = []
         for pid in similar_ids:
             if len(preview_images) >= 4:
                 break
-            if pid == object_id:
-                continue
-            if pid in ignored_ids:
+            if pid == object_id or pid in ignored_ids:
                 continue
 
             img_path = all_image_paths.get(pid)
             if not img_path:
                 continue
 
-            # Filter by frontal check (only show frontal faces) - if enabled
             if FACE_FILTER_CONFIG.get("enabled", True):
                 if not check_frontal(img_path):
                     continue
 
-            # Normalize path to URL format
             if img_path.startswith(PHOTOS_PREFIX):
                 img_path = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
             elif not img_path.startswith("/"):
@@ -1505,24 +1480,17 @@ async def dashboard(request: Request, refresh: bool = False, sort: str = "simila
             "name": name,
             "object_id": object_id,
             "main_image": main_image,
-            "similar_count": total_valid,  # Total cluster size
-            "similar_images": preview_images,  # Just preview (4 for cards)
-            "details": details,
+            "similar_count": total_valid,
+            "similar_images": preview_images,
         })
 
-    # Sort visitor data
+    # Sort
     if sort == "alphabetic":
         visitor_data.sort(key=lambda x: x["name"].lower())
-    else:  # similarity (default) - sort by similar_count descending
+    else:
         visitor_data.sort(key=lambda x: x["similar_count"], reverse=True)
 
-    return templates.TemplateResponse("dashboard.html", {
-        "request": request,
-        "visitors": visitor_data,
-        "cluster_info": cluster_info,
-        "current_sort": sort,
-        "loading": False,
-    })
+    return {"visitors": visitor_data, "total": len(visitor_data)}
 
 
 @app.get("/api/visitors")
@@ -1668,21 +1636,43 @@ async def api_ignore(request: Request):
 @app.post("/api/combine")
 async def api_combine(request: Request):
     """
-    Combine selected cluster faces into the main registered entry.
-    Uses the selected_ids from the frontend instead of re-querying.
+    Combine remaining cluster faces into the main registered entry.
+    - combine_ids: faces to combine (the remaining ones)
+    - ignore_ids: faces to mark as ignored (the selected ones)
     """
     try:
         data = await request.json()
         registered_object_id = data.get("registered_object_id")
-        selected_ids = data.get("selected_ids", [])
+        combine_ids = data.get("combine_ids", [])
+        ignore_ids = data.get("ignore_ids", [])
 
         if not registered_object_id:
             return {"success": False, "error": "registered_object_id is required"}
 
-        if not selected_ids:
-            return {"success": False, "error": "No faces selected to combine"}
+        if not combine_ids:
+            return {"success": False, "error": "No faces to combine"}
 
-        result = combine_selected_faces(registered_object_id, selected_ids)
+        # First, ignore the selected faces
+        ignored_count = 0
+        if ignore_ids:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    for oid in ignore_ids:
+                        cur.execute("""
+                            UPDATE objects
+                            SET object_attributes = object_attributes || '{"display_name": "ignored"}'::jsonb
+                            WHERE object_id = %s
+                        """, (oid,))
+                        ignored_count += 1
+                    conn.commit()
+
+        # Then combine the remaining faces
+        result = combine_selected_faces(registered_object_id, combine_ids)
+
+        if result.get("success"):
+            result["ignored_count"] = ignored_count
+            result["message"] = f"Combined {result.get('combined_count', 0)} face(s), ignored {ignored_count}"
+
         return result
     except Exception as e:
         return {"success": False, "error": str(e)}
