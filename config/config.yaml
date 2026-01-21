@@ -31,3 +31,7 @@ face_filter:
 # InsightFace 512D embeddings: same person ~0.4-0.7, different person ~0.1-0.3
 similarity:
   threshold: 0.29
+
+# UI settings
+ui:
+  page_size: 20  # Number of visitors per page in the dashboard

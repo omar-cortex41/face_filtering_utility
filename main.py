@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 import uvicorn
@@ -69,6 +69,8 @@ PHOTOS_PREFIX = config["photos"]["directory"]      # Same as dir name, used for 
 
 FACE_FILTER_CONFIG = config.get("face_filter", {})
 CLUSTERING_CONFIG = config.get("clustering", {})
+UI_CONFIG = config.get("ui", {})
+PAGE_SIZE = int(UI_CONFIG.get("page_size", 20))
 
 
 def get_db_connection():
@@ -167,36 +169,6 @@ def get_visitors() -> dict[str, int]:
                             visitors[name] = object_id
 
     return visitors
-
-
-def find_similar_embeddings(object_id: int, similarity_threshold: float = 0.2, limit: int = 1000) -> list[int]:
-    """
-    Find all Qdrant point IDs similar to the given object_id's embedding.
-    (Legacy cosine similarity method - kept for backwards compatibility)
-    """
-    client = get_qdrant_client()
-
-    # Get the embedding for this object_id
-    points = client.retrieve(
-        collection_name=QDRANT_COLLECTION,
-        ids=[object_id],
-        with_vectors=True,
-    )
-
-    if not points or not points[0].vector:
-        return []
-
-    vector = points[0].vector
-
-    # Search for all similar embeddings
-    result = client.query_points(
-        collection_name=QDRANT_COLLECTION,
-        query=vector,
-        limit=limit,
-        score_threshold=similarity_threshold,
-    )
-
-    return [hit.id for hit in result.points]
 
 
 # ========= Frontal Face Filter (MediaPipe Face Mesh) =========
@@ -472,6 +444,49 @@ def get_similar_faces(object_id: int, threshold: float = None, limit: int = 500)
     return similar_ids if similar_ids else [object_id]
 
 
+def get_similar_faces_with_scores(object_id: int, threshold: float = None, limit: int = 500) -> dict[int, float]:
+    """
+    Get all similar face IDs with their similarity scores using Qdrant cosine similarity.
+
+    Args:
+        object_id: The object_id to find similar faces for
+        threshold: Cosine similarity threshold (0-1, higher = more similar)
+        limit: Maximum number of results
+
+    Returns:
+        Dict mapping object_id -> similarity score (0-1, higher = more similar)
+    """
+    if threshold is None:
+        threshold = SIMILARITY_THRESHOLD
+
+    client = get_qdrant_client()
+
+    # Get the embedding for this object
+    points = client.retrieve(
+        collection_name=QDRANT_COLLECTION,
+        ids=[object_id],
+        with_vectors=True,
+    )
+
+    if not points or not points[0].vector:
+        return {object_id: 1.0}  # Return self with 100% similarity
+
+    vector = points[0].vector
+
+    # Query Qdrant for similar embeddings
+    result = client.query_points(
+        collection_name=QDRANT_COLLECTION,
+        query=vector,
+        limit=limit,
+        score_threshold=threshold,
+    )
+
+    # Return dict of id -> score
+    scores = {p.id: p.score for p in result.points}
+
+    return scores if scores else {object_id: 1.0}
+
+
 def get_cluster_for_point(object_id: int) -> list[int]:
     """
     Get all point IDs similar to the given object_id using Qdrant cosine similarity.
@@ -521,262 +536,7 @@ def cluster_embeddings(force_refresh: bool = False, background: bool = False) ->
     return {}
 
 
-# ============== InsightFace Verification & Super Embeddings ==============
 
-# Thresholds for combining embeddings
-COMBINE_QDRANT_THRESHOLD = 0.3   # Loose - get candidates from Qdrant
-COMBINE_ARCFACE_THRESHOLD = 0.5  # Strict - verify with ArcFace
-
-
-def get_arcface_embedding(image_path: str) -> np.ndarray | None:
-    """Extract ArcFace embedding from an image using InsightFace."""
-    if not INSIGHTFACE_AVAILABLE:
-        return None
-
-    path = _resolve_photo_path(image_path)
-    if not path or not Path(path).exists():
-        return None
-
-    img = cv2.imread(path)
-    if img is None:
-        return None
-
-    try:
-        faces = _insightface_app.get(img)
-        if not faces:
-            return None
-        largest = max(faces, key=lambda f: (f.bbox[2]-f.bbox[0]) * (f.bbox[3]-f.bbox[1]))
-        emb = largest.embedding
-        return emb / np.linalg.norm(emb)
-    except Exception:
-        return None
-
-
-def arcface_similarity(emb1: np.ndarray, emb2: np.ndarray) -> float:
-    """Compute cosine similarity between two ArcFace embeddings."""
-    return float(np.dot(emb1, emb2) / (np.linalg.norm(emb1) * np.linalg.norm(emb2)))
-
-
-def get_verified_similar_faces(object_id: int, main_image_path: str = None) -> list[int]:
-    """
-    Get similar faces verified with ArcFace.
-    1. Query Qdrant with loose threshold
-    2. Verify each candidate with ArcFace
-    3. Return only verified matches
-    """
-    if not INSIGHTFACE_AVAILABLE:
-        # Fall back to Qdrant-only
-        return get_similar_faces(object_id)
-
-    # Get main image embedding
-    if not main_image_path:
-        main_image_path = _get_image_path_for_object(object_id)
-
-    main_emb = get_arcface_embedding(main_image_path)
-    if main_emb is None:
-        return get_similar_faces(object_id)
-
-    # Get candidates from Qdrant (loose threshold)
-    client = get_qdrant_client()
-    points = client.retrieve(QDRANT_COLLECTION, ids=[object_id], with_vectors=True)
-    if not points:
-        return [object_id]
-
-    result = client.query_points(
-        collection_name=QDRANT_COLLECTION,
-        query=points[0].vector,
-        limit=100,
-        score_threshold=COMBINE_QDRANT_THRESHOLD,
-    )
-
-    candidates = [(p.id, p.score) for p in result.points if p.id != object_id]
-
-    # Verify each with ArcFace
-    verified = [object_id]
-    for cand_id, _ in candidates:
-        cand_path = _get_image_path_for_object(cand_id)
-        if not cand_path:
-            continue
-        cand_emb = get_arcface_embedding(cand_path)
-        if cand_emb is None:
-            continue
-
-        sim = arcface_similarity(main_emb, cand_emb)
-        if sim >= COMBINE_ARCFACE_THRESHOLD:
-            verified.append(cand_id)
-
-    return verified
-
-
-def _get_image_path_for_object(object_id: int) -> str | None:
-    """Get image path for a single object_id."""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT object_attributes->>'image_path'
-                FROM objects WHERE object_id = %s
-            """, (object_id,))
-            row = cur.fetchone()
-            return row[0] if row else None
-
-
-def combine_to_super_embedding(object_id: int) -> dict:
-    """
-    Combine verified similar faces into a super embedding.
-    Updates the main object's embedding in Qdrant with the average.
-    Returns info about what was combined.
-    """
-    if not INSIGHTFACE_AVAILABLE:
-        return {"error": "InsightFace not available"}
-
-    main_path = _get_image_path_for_object(object_id)
-    main_emb = get_arcface_embedding(main_path)
-    if main_emb is None:
-        return {"error": "Could not extract main face embedding"}
-
-    # Get verified similar faces
-    verified_ids = get_verified_similar_faces(object_id, main_path)
-
-    if len(verified_ids) <= 1:
-        return {"object_id": object_id, "combined": 0, "message": "No similar faces found"}
-
-    # Collect all verified embeddings
-    embeddings = [main_emb]
-    combined_ids = []
-
-    for vid in verified_ids:
-        if vid == object_id:
-            continue
-        emb = get_arcface_embedding(_get_image_path_for_object(vid))
-        if emb is not None:
-            embeddings.append(emb)
-            combined_ids.append(vid)
-
-    # Create super embedding (average)
-    super_emb = np.mean(embeddings, axis=0)
-    super_emb = super_emb / np.linalg.norm(super_emb)
-
-    # Update in Qdrant
-    client = get_qdrant_client()
-    client.upsert(
-        collection_name=QDRANT_COLLECTION,
-        points=[PointStruct(id=object_id, vector=super_emb.tolist(), payload={})]
-    )
-
-    # Mark combined IDs as ignored
-    _mark_objects_ignored(combined_ids)
-
-    return {
-        "object_id": object_id,
-        "combined": len(embeddings),
-        "ignored": combined_ids,
-    }
-
-
-def _mark_objects_ignored(object_ids: list[int]):
-    """Mark object_ids as ignored in the database."""
-    if not object_ids:
-        return
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # Create table if not exists
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS ignored_objects (
-                    object_id INTEGER PRIMARY KEY,
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            cur.execute("""
-                INSERT INTO ignored_objects (object_id)
-                SELECT unnest(%s::int[])
-                ON CONFLICT DO NOTHING
-            """, (object_ids,))
-        conn.commit()
-
-
-def combine_all_visitor_embeddings() -> dict:
-    """
-    Combine embeddings for all registered visitors.
-    Returns summary of operations.
-    """
-    visitors = get_visitors()
-    results = []
-
-    print(f"Combining embeddings for {len(visitors)} visitors...")
-
-    for name, object_id in visitors.items():
-        result = combine_to_super_embedding(object_id)
-        result["name"] = name
-        results.append(result)
-
-        if "error" not in result:
-            print(f"  {name}: Combined {result.get('combined', 0)} faces")
-        else:
-            print(f"  {name}: {result['error']}")
-
-    total_combined = sum(r.get("combined", 0) for r in results)
-    total_ignored = sum(len(r.get("ignored", [])) for r in results)
-
-    return {
-        "visitors_processed": len(visitors),
-        "faces_combined": total_combined,
-        "duplicates_ignored": total_ignored,
-        "details": results,
-    }
-
-
-def analyze_user_embeddings(similarity_threshold: float = 0.2):
-    """
-    For each user, find all similar embeddings in Qdrant.
-    """
-    visitors = get_visitors()
-
-    print(f"{'Name':<30} {'Object ID':<12} {'Similar Points':<15}")
-    print("-" * 60)
-
-    for name, object_id in visitors.items():
-        similar_ids = find_similar_embeddings(object_id, similarity_threshold)
-        print(f"{name:<30} {object_id:<12} {len(similar_ids):<15}")
-
-
-def debug_point_search(point_id: int):
-    """Debug: search for similar points to a specific point."""
-    client = get_qdrant_client()
-
-    # Get collection info
-    info = client.get_collection(QDRANT_COLLECTION)
-    print(f"Collection: {QDRANT_COLLECTION}")
-    print(f"Total points: {info.points_count}")
-    print(f"Distance: {info.config.params.vectors.distance}")
-    print()
-
-    # Get the point
-    points = client.retrieve(
-        collection_name=QDRANT_COLLECTION,
-        ids=[point_id],
-        with_vectors=True,
-        with_payload=True,
-    )
-
-    if not points:
-        print(f"Point {point_id} not found!")
-        return
-
-    print(f"Point {point_id} payload: {points[0].payload}")
-    print(f"Vector length: {len(points[0].vector) if points[0].vector else 'None'}")
-    print()
-
-    # Try different thresholds
-    for threshold in [0.9, 0.8, 0.7, 0.6, 0.5, 0.0]:
-        result = client.query_points(
-            collection_name=QDRANT_COLLECTION,
-            query=points[0].vector,
-            limit=100,
-            score_threshold=threshold,
-        )
-        print(f"Threshold {threshold}: {len(result.points)} similar points")
-        if threshold == 0.0 and result.points:
-            print(f"  Top 5 scores: {[round(p.score, 3) for p in result.points[:5]]}")
 
 
 def get_embedding_for_object(object_id: int) -> np.ndarray | None:
@@ -868,341 +628,57 @@ def delete_objects_from_qdrant(object_ids: list[int]) -> int:
         return 0
 
 
-def combine_embeddings(
-    registered_object_id: int,
-    selected_object_ids: list[int],
-    weight_existing: float = 0.5,
-    cleanup: bool = True
-) -> dict:
+def delete_non_frontal_faces(object_ids: list[int], all_image_paths: dict) -> dict:
     """
-    Combine selected embeddings with the registered entry's existing embedding.
+    Check faces and delete those that fail the frontal face filter.
+    Deletes from both PostgreSQL (events + objects) and Qdrant.
 
-    Workflow:
-    1. Calculate centroid (average) of selected embeddings
-    2. Fetch existing embedding for registered entry from Qdrant
-    3. Calculate weighted average: final = weight * existing + (1-weight) * new_average
-    4. Update Qdrant with final embedding
-    5. Delete redundant entries from database and Qdrant (if cleanup=True)
-
-    Args:
-        registered_object_id: The main registered entry ID (to keep)
-        selected_object_ids: List of object IDs selected by user to combine
-        weight_existing: Weight for existing embedding (0.0-1.0), default 0.5
-        cleanup: Whether to delete redundant entries after combining
-
-    Returns:
-        dict with success status and details
+    Returns dict with:
+    - deleted_count: number of faces deleted
+    - deleted_ids: list of deleted object IDs
     """
-    # Filter out the registered entry from selected (we handle it separately)
-    other_ids = [oid for oid in selected_object_ids if oid != registered_object_id]
+    if not object_ids:
+        return {"deleted_count": 0, "deleted_ids": []}
 
-    if not other_ids:
-        return {"success": False, "error": "No images selected to combine"}
+    ids_to_delete = []
 
-    # Step 1: Get embeddings for selected images
-    selected_embeddings = get_embeddings_for_objects(other_ids)
+    for oid in object_ids:
+        img_path = all_image_paths.get(oid)
+        if not img_path:
+            continue
 
-    if not selected_embeddings:
-        return {"success": False, "error": "Could not retrieve selected embeddings"}
+        # Check if face is frontal
+        if not check_frontal(img_path):
+            ids_to_delete.append(oid)
 
-    # Calculate centroid (average) of selected embeddings
-    vectors = list(selected_embeddings.values())
-    new_average = np.mean(vectors, axis=0)
+    if not ids_to_delete:
+        return {"deleted_count": 0, "deleted_ids": []}
 
-    # Normalize the new average
-    norm = np.linalg.norm(new_average)
-    if norm > 0:
-        new_average = new_average / norm
+    print(f"[AutoCleanup] Deleting {len(ids_to_delete)} non-frontal faces: {ids_to_delete}")
 
-    # Step 2: Fetch existing embedding for registered entry
-    existing_embedding = get_embedding_for_object(registered_object_id)
-
-    if existing_embedding is None:
-        return {"success": False, "error": "Could not retrieve existing embedding for registered entry"}
-
-    # Step 3: Calculate weighted average
-    # final = weight_existing * existing + (1 - weight_existing) * new_average
-    final_embedding = weight_existing * existing_embedding + (1 - weight_existing) * new_average
-
-    # Normalize final embedding
-    norm = np.linalg.norm(final_embedding)
-    if norm > 0:
-        final_embedding = final_embedding / norm
-
-    # Step 4: Update Qdrant with final embedding
-    success = update_embedding(registered_object_id, final_embedding)
-
-    if not success:
-        return {"success": False, "error": "Failed to update embedding in Qdrant"}
-
-    # Step 5: Data cleanup - delete redundant entries
+    # Delete from PostgreSQL (events first due to foreign key constraint)
     deleted_db = 0
-    deleted_qdrant = 0
-
-    if cleanup and other_ids:
-        deleted_db = delete_objects_from_db(other_ids)
-        deleted_qdrant = delete_objects_from_qdrant(other_ids)
-
-    # Clear cluster cache since embeddings changed
-    global _cluster_cache
-    _cluster_cache = {"labels": None, "point_ids": None, "n_clusters": None}
-
-    return {
-        "success": True,
-        "object_id": registered_object_id,
-        "combined_count": len(vectors),
-        "weight_existing": weight_existing,
-        "deleted_from_db": deleted_db,
-        "deleted_from_qdrant": deleted_qdrant,
-        "message": f"Combined {len(vectors)} images. Deleted {deleted_db} redundant entries."
-    }
-
-
-def get_non_ignored_cluster_members(main_object_id: int, use_arcface: bool = True) -> list[int]:
-    """
-    Get all cluster members for main_object_id, excluding ignored ones.
-    Returns list of object_ids that are NOT ignored.
-
-    If use_arcface=True and InsightFace is available, verifies each candidate
-    with ArcFace before including it.
-    """
-    # Get cluster members - use ArcFace verification if available
-    if use_arcface and INSIGHTFACE_AVAILABLE:
-        main_path = _get_image_path_for_object(main_object_id)
-        cluster_members = get_verified_similar_faces(main_object_id, main_path)
-    else:
-        cluster_members = get_cluster_for_point(main_object_id)
-
-    if not cluster_members:
-        return []
-
-    # Filter out ignored ones by checking database
-    non_ignored = []
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            for oid in cluster_members:
-                cur.execute("""
-                    SELECT object_attributes->>'display_name'
-                    FROM objects WHERE object_id = %s
-                """, (oid,))
-                row = cur.fetchone()
-                # Include if no display_name or display_name is not 'ignored'
-                if not row or row[0] != 'ignored':
-                    non_ignored.append(oid)
-
-    return non_ignored
-
-
-def create_gold_embedding(main_object_id: int) -> dict:
-    """
-    Create Gold Embedding: average of ALL remaining (non-ignored) images in cluster,
-    excluding the main image.
-
-    Stores the original main embedding in Qdrant payload for Perfect to use later.
-
-    Args:
-        main_object_id: The registered entry ID (whose embedding will be updated)
-
-    Returns:
-        dict with success status and details
-    """
-    # Get all non-ignored cluster members, excluding main
-    # Use Qdrant-only (use_arcface=False) since images shown in modal already passed filtering
-    cluster_members = get_non_ignored_cluster_members(main_object_id, use_arcface=False)
-    other_ids = [oid for oid in cluster_members if oid != main_object_id]
-
-    if not other_ids:
-        return {"success": False, "error": "No remaining images to combine (all ignored?)"}
-
-    # Get original main embedding BEFORE we modify it
-    original_main = get_embedding_for_object(main_object_id)
-    if original_main is None:
-        return {"success": False, "error": "Could not retrieve main object's embedding"}
-
-    # Get embeddings for all other images
-    embeddings = get_embeddings_for_objects(other_ids)
-
-    if not embeddings:
-        return {"success": False, "error": "Could not retrieve embeddings"}
-
-    # Calculate Gold (average of all others)
-    vectors = list(embeddings.values())
-    gold_embedding = np.mean(vectors, axis=0)
-
-    # Normalize
-    norm = np.linalg.norm(gold_embedding)
-    if norm > 0:
-        gold_embedding = gold_embedding / norm
-
-    # Store original embedding in Qdrant payload, then update with Gold
-    client = get_qdrant_client()
+    deleted_events = 0
     try:
-        # Get existing payload
-        existing = client.retrieve(
-            collection_name=QDRANT_COLLECTION,
-            ids=[main_object_id],
-            with_payload=True,
-            with_vectors=False,
-        )
-        payload = existing[0].payload if existing else {}
-
-        # Store original embedding for Perfect to use later
-        payload["original_embedding"] = original_main.tolist()
-        payload["gold_applied"] = True
-
-        # Update with Gold embedding
-        client.upsert(
-            collection_name=QDRANT_COLLECTION,
-            points=[
-                PointStruct(
-                    id=main_object_id,
-                    vector=gold_embedding.tolist(),
-                    payload=payload,
-                )
-            ],
-        )
-
-        # Clear cluster cache
-        global _cluster_cache
-        _cluster_cache = {"labels": None, "point_ids": None, "n_clusters": None}
-
-        return {
-            "success": True,
-            "object_id": main_object_id,
-            "combined_count": len(vectors),
-            "gold_applied": True,
-            "message": f"Gold embedding created from {len(vectors)} images"
-        }
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                for oid in ids_to_delete:
+                    # Delete related events first
+                    cur.execute("DELETE FROM events WHERE object_id = %s", (oid,))
+                    deleted_events += cur.rowcount
+                    # Then delete the object
+                    cur.execute("DELETE FROM objects WHERE object_id = %s", (oid,))
+                    deleted_db += cur.rowcount
+                conn.commit()
+        print(f"[AutoCleanup] Deleted {deleted_db} from objects, {deleted_events} from events")
     except Exception as e:
-        return {"success": False, "error": f"Failed to update embedding: {e}"}
+        print(f"[AutoCleanup] Error deleting from PostgreSQL: {e}")
 
+    # Delete from Qdrant
+    deleted_qdrant = delete_objects_from_qdrant(ids_to_delete)
+    print(f"[AutoCleanup] Deleted {deleted_qdrant} from Qdrant")
 
-def create_perfect_embedding(main_object_id: int) -> dict:
-    """
-    Create Perfect Embedding: combines Gold (current) with Original main embedding.
-    Then removes all other images in the cluster (merged into main).
-
-    Formula: perfect = (gold + original_main) / 2
-
-    Requires Gold to have been applied first (original_embedding stored in payload).
-
-    Args:
-        main_object_id: The registered entry ID
-
-    Returns:
-        dict with success status and details
-    """
-    client = get_qdrant_client()
-
-    # Get all cluster members BEFORE we modify anything (for cleanup)
-    cluster_members = get_non_ignored_cluster_members(main_object_id)
-    other_ids = [oid for oid in cluster_members if oid != main_object_id]
-
-    # Get current point with payload and vector
-    points = client.retrieve(
-        collection_name=QDRANT_COLLECTION,
-        ids=[main_object_id],
-        with_payload=True,
-        with_vectors=True,
-    )
-
-    if not points:
-        return {"success": False, "error": "Could not find main object in Qdrant"}
-
-    point = points[0]
-    payload = point.payload or {}
-
-    # Check if Gold was applied
-    if not payload.get("gold_applied"):
-        return {"success": False, "error": "Gold embedding must be applied first"}
-
-    # Get original embedding from payload
-    original_embedding_list = payload.get("original_embedding")
-    if not original_embedding_list:
-        return {"success": False, "error": "Original embedding not found. Apply Gold first."}
-
-    original_embedding = np.array(original_embedding_list)
-    gold_embedding = np.array(point.vector)
-
-    # Calculate Perfect = (Gold + Original) / 2
-    perfect_embedding = (gold_embedding + original_embedding) / 2
-
-    # Normalize
-    norm = np.linalg.norm(perfect_embedding)
-    if norm > 0:
-        perfect_embedding = perfect_embedding / norm
-
-    # Update payload - remove original_embedding, mark perfect as applied
-    payload.pop("original_embedding", None)
-    payload["gold_applied"] = False
-    payload["perfect_applied"] = True
-
-    try:
-        # Update main with perfect embedding
-        client.upsert(
-            collection_name=QDRANT_COLLECTION,
-            points=[
-                PointStruct(
-                    id=main_object_id,
-                    vector=perfect_embedding.tolist(),
-                    payload=payload,
-                )
-            ],
-        )
-
-        # Delete all other images from Qdrant and DB (they're now merged into main)
-        deleted_qdrant = 0
-        deleted_db = 0
-        print(f"[Perfect] About to delete {len(other_ids)} other IDs: {other_ids[:5]}...")
-        if other_ids:
-            deleted_qdrant = delete_objects_from_qdrant(other_ids)
-            print(f"[Perfect] Deleted {deleted_qdrant} from Qdrant")
-            deleted_db = delete_objects_from_db(other_ids)
-            print(f"[Perfect] Deleted {deleted_db} from DB")
-
-        # Clear cluster cache
-        global _cluster_cache
-        _cluster_cache = {"labels": None, "point_ids": None, "n_clusters": None}
-
-        return {
-            "success": True,
-            "object_id": main_object_id,
-            "perfect_applied": True,
-            "deleted_count": len(other_ids),
-            "message": f"Perfect embedding created. Merged {len(other_ids)} images into main."
-        }
-    except Exception as e:
-        return {"success": False, "error": f"Failed to update embedding: {e}"}
-
-
-def combine_cluster_to_main(main_object_id: int) -> dict:
-    """
-    One-step combine: creates gold embedding then perfect embedding.
-    Combines all cluster members into the main entry.
-
-    Args:
-        main_object_id: The registered entry ID
-
-    Returns:
-        dict with success status and details
-    """
-    # Step 1: Create Gold embedding
-    gold_result = create_gold_embedding(main_object_id)
-    if not gold_result.get("success"):
-        return gold_result
-
-    # Step 2: Create Perfect embedding (combines gold with original)
-    perfect_result = create_perfect_embedding(main_object_id)
-    if not perfect_result.get("success"):
-        return {"success": False, "error": f"Gold succeeded but Perfect failed: {perfect_result.get('error')}"}
-
-    return {
-        "success": True,
-        "object_id": main_object_id,
-        "combined_count": gold_result.get("combined_count", 0),
-        "deleted_count": perfect_result.get("deleted_count", 0),
-        "message": f"Combined {gold_result.get('combined_count', 0)} faces into main entry"
-    }
+    return {"deleted_count": len(ids_to_delete), "deleted_ids": ids_to_delete}
 
 
 def combine_selected_faces(main_object_id: int, selected_ids: list[int]) -> dict:
@@ -1273,22 +749,30 @@ def combine_selected_faces(main_object_id: int, selected_ids: list[int]) -> dict
             ],
         )
 
-        # Mark the combined images as ignored in PostgreSQL (so they don't show up anymore)
+        # Delete combined images from PostgreSQL (events first due to FK constraint)
+        deleted_db = 0
+        deleted_events = 0
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 for oid in selected_ids:
-                    cur.execute("""
-                        UPDATE objects
-                        SET object_attributes = object_attributes || '{"display_name": "ignored"}'::jsonb
-                        WHERE object_id = %s
-                    """, (oid,))
+                    cur.execute("DELETE FROM events WHERE object_id = %s", (oid,))
+                    deleted_events += cur.rowcount
+                    cur.execute("DELETE FROM objects WHERE object_id = %s", (oid,))
+                    deleted_db += cur.rowcount
                 conn.commit()
+
+        # Delete combined images from Qdrant
+        deleted_qdrant = delete_objects_from_qdrant(selected_ids)
+
+        print(f"[Combine] Deleted {deleted_db} objects, {deleted_events} events from DB, {deleted_qdrant} from Qdrant")
 
         return {
             "success": True,
             "object_id": main_object_id,
             "combined_count": len(selected_ids),
-            "message": f"Combined {len(selected_ids)} selected face(s) into main entry"
+            "deleted_from_db": deleted_db,
+            "deleted_from_qdrant": deleted_qdrant,
+            "message": f"Combined {len(selected_ids)} face(s) and deleted from database"
         }
     except Exception as e:
         return {"success": False, "error": f"Failed to update embedding: {str(e)}"}
@@ -1423,79 +907,101 @@ async def dashboard(request: Request, sort: str = "similarity"):
         "current_sort": sort,
     })
 
-@app.get("/api/visitors-data")
-async def api_visitors_data(sort: str = "similarity", frontal_only: bool = True):
-    """API endpoint to get all visitor data for the dashboard (async loading)."""
-    import time
-    start_time = time.time()
+@app.get("/api/visitors-data-stream")
+async def api_visitors_data_stream(sort: str = "similarity", frontal_only: bool = True):
+    """SSE endpoint that streams progress as visitors are processed.
+    Sends progress events, then final data event."""
 
-    visitors = get_visitors()
+    def generate():
+        visitors = get_visitors()
+        total_count = len(visitors)
 
-    # Batch-load data for performance
-    ignored_ids = _get_all_ignored_ids()
-    all_image_paths = _get_all_image_paths()
+        # Send initial count
+        yield f"data: {json.dumps({'type': 'start', 'total': total_count})}\n\n"
 
-    print(f"[API] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths, frontal_only={frontal_only} in {time.time() - start_time:.2f}s")
+        # Batch-load data for performance
+        ignored_ids = _get_all_ignored_ids()
+        all_image_paths = _get_all_image_paths()
 
-    visitor_data = []
+        visitor_data = []
+        all_non_frontal_ids = []
+        processed = 0
 
-    for name, object_id in visitors.items():
-        details = {"image_path": all_image_paths.get(object_id)}
-        similar_ids = get_similar_faces(object_id)
+        for name, object_id in visitors.items():
+            details = {"image_path": all_image_paths.get(object_id)}
+            similar_ids = get_similar_faces(object_id)
 
-        total_valid = sum(1 for pid in similar_ids if pid != object_id and pid not in ignored_ids and pid in all_image_paths)
+            total_valid = sum(1 for pid in similar_ids if pid != object_id and pid not in ignored_ids and pid in all_image_paths)
 
-        main_image = None
-        main_image_qualified = True
-        if details and details.get("image_path"):
-            img_path = details["image_path"]
-            # Check if main image is frontal/qualified (convert numpy bool to Python bool)
-            main_image_qualified = bool(check_frontal(img_path))
-            if img_path.startswith(PHOTOS_PREFIX + "/"):
-                main_image = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
-            elif img_path.startswith("/" + PHOTOS_PREFIX + "/"):
-                main_image = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 2:]
-            else:
-                main_image = "/" + PHOTOS_PREFIX + "/" + img_path
+            main_image = None
+            main_image_qualified = True
+            if details and details.get("image_path"):
+                img_path = details["image_path"]
+                main_image_qualified = bool(check_frontal(img_path))
+                if img_path.startswith(PHOTOS_PREFIX + "/"):
+                    main_image = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
+                elif img_path.startswith("/" + PHOTOS_PREFIX + "/"):
+                    main_image = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 2:]
+                else:
+                    main_image = "/" + PHOTOS_PREFIX + "/" + img_path
 
-        preview_images = []
-        for pid in similar_ids:
-            if len(preview_images) >= 4:
-                break
-            if pid == object_id or pid in ignored_ids:
-                continue
-
-            img_path = all_image_paths.get(pid)
-            if not img_path:
-                continue
-
-            # Apply frontal filter based on UI toggle
-            if frontal_only:
-                if not check_frontal(img_path):
+            preview_images = []
+            for pid in similar_ids:
+                if len(preview_images) >= 4:
+                    break
+                if pid == object_id or pid in ignored_ids:
                     continue
+                img_path = all_image_paths.get(pid)
+                if not img_path:
+                    continue
+                if frontal_only:
+                    if not check_frontal(img_path):
+                        all_non_frontal_ids.append(pid)
+                        continue
+                if img_path.startswith(PHOTOS_PREFIX):
+                    img_path = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
+                elif not img_path.startswith("/"):
+                    img_path = "/" + PHOTOS_PREFIX + "/" + img_path
+                preview_images.append({"id": pid, "path": img_path})
 
-            if img_path.startswith(PHOTOS_PREFIX):
-                img_path = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
-            elif not img_path.startswith("/"):
-                img_path = "/" + PHOTOS_PREFIX + "/" + img_path
-            preview_images.append({"id": pid, "path": img_path})
+            visitor_data.append({
+                "name": name,
+                "object_id": object_id,
+                "main_image": main_image,
+                "main_image_qualified": main_image_qualified,
+                "similar_count": total_valid,
+                "similar_images": preview_images,
+            })
 
-        visitor_data.append({
-            "name": name,
-            "object_id": object_id,
-            "main_image": main_image,
-            "main_image_qualified": main_image_qualified,
-            "similar_count": total_valid,
-            "similar_images": preview_images,
-        })
+            processed += 1
+            percent = int((processed / total_count) * 100)
+            # Send progress update every visitor
+            yield f"data: {json.dumps({'type': 'progress', 'processed': processed, 'total': total_count, 'percent': percent})}\n\n"
 
-    # Sort
-    if sort == "alphabetic":
-        visitor_data.sort(key=lambda x: x["name"].lower())
-    else:
-        visitor_data.sort(key=lambda x: x["similar_count"], reverse=True)
+        # Auto-delete non-frontal faces
+        deleted_count = 0
+        if frontal_only and all_non_frontal_ids:
+            unique_non_frontal = list(set(all_non_frontal_ids))
+            cleanup_result = delete_non_frontal_faces(unique_non_frontal, all_image_paths)
+            deleted_count = cleanup_result.get("deleted_count", 0)
 
-    return {"visitors": visitor_data, "total": len(visitor_data)}
+        # Sort
+        if sort == "alphabetic":
+            visitor_data.sort(key=lambda x: x["name"].lower())
+        else:
+            visitor_data.sort(key=lambda x: x["similar_count"], reverse=True)
+
+        # Get total faces count from Qdrant
+        try:
+            client = get_qdrant_client()
+            total_faces = client.get_collection(QDRANT_COLLECTION).points_count
+        except Exception:
+            total_faces = 0
+
+        # Send final data
+        yield f"data: {json.dumps({'type': 'complete', 'visitors': visitor_data, 'total': len(visitor_data), 'total_faces': total_faces, 'page_size': PAGE_SIZE, 'auto_deleted_count': deleted_count})}\n\n"
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
 
 
 @app.get("/api/visitors")
@@ -1519,24 +1025,23 @@ async def api_visitor(object_id: int):
 @app.get("/api/cluster-images/{object_id}")
 async def api_cluster_images(object_id: int, frontal_only: bool = True):
     """
-    Get ALL images in the same cluster as object_id.
-    Applies frontal face filter if enabled and frontal_only=True.
-    Returns images with cached frontal check, running checks for uncached ones.
+    Get ALL images in the same cluster as object_id with similarity scores.
+    When frontal_only=True, non-frontal faces are auto-deleted from PostgreSQL and Qdrant.
     """
     start_time = time.time()
 
-    # Get cluster for this object
-    similar_ids = get_cluster_for_point(object_id)
+    # Get cluster for this object WITH similarity scores
+    similar_scores = get_similar_faces_with_scores(object_id)
 
     # Batch-load data
     ignored_ids = _get_all_ignored_ids()
     all_image_paths = _get_all_image_paths()
 
     images = []
-    # frontal_only parameter from UI takes priority
-    frontal_check_enabled = frontal_only
+    non_frontal_ids = []
+    deleted_count = 0
 
-    for pid in similar_ids:
+    for pid, score in similar_scores.items():
         if pid == object_id:
             continue
         if pid in ignored_ids:
@@ -1546,9 +1051,10 @@ async def api_cluster_images(object_id: int, frontal_only: bool = True):
         if not img_path:
             continue
 
-        # Apply frontal check if enabled
-        if frontal_check_enabled:
+        # Check frontal - when enabled, non-frontal faces are auto-deleted
+        if frontal_only:
             if not check_frontal(img_path):
+                non_frontal_ids.append(pid)
                 continue
 
         # Normalize path to URL format
@@ -1556,16 +1062,25 @@ async def api_cluster_images(object_id: int, frontal_only: bool = True):
             img_path = "/" + PHOTOS_PREFIX + "/" + img_path[len(PHOTOS_PREFIX) + 1:]
         elif not img_path.startswith("/"):
             img_path = "/" + PHOTOS_PREFIX + "/" + img_path
-        images.append({"id": pid, "path": img_path})
+
+        # Convert score (0-1) to percentage and include in response
+        similarity_percent = round(score * 100, 1)
+        images.append({"id": pid, "path": img_path, "similarity": similarity_percent})
+
+    # Auto-delete non-frontal faces when filter is enabled
+    if frontal_only and non_frontal_ids:
+        cleanup_result = delete_non_frontal_faces(non_frontal_ids, all_image_paths)
+        deleted_count = cleanup_result.get("deleted_count", 0)
 
     elapsed = time.time() - start_time
-    print(f"[ClusterImages] object={object_id}, total={len(similar_ids)}, returned={len(images)} in {elapsed:.2f}s")
+    print(f"[ClusterImages] object={object_id}, total={len(similar_scores)}, returned={len(images)}, auto_deleted={deleted_count} in {elapsed:.2f}s")
 
     return {
         "object_id": object_id,
-        "total_in_cluster": len(similar_ids),
+        "total_in_cluster": len(similar_scores),
         "images": images,
-        "frontal_filter_enabled": frontal_check_enabled,
+        "frontal_filter_enabled": frontal_only,
+        "auto_deleted_count": deleted_count,
     }
 
 
@@ -1591,112 +1106,16 @@ async def api_refresh_clusters():
         return {"success": False, "message": "Clustering already in progress"}
 
 
-@app.post("/api/ignore")
-async def api_ignore(request: Request):
-    """Mark selected object_ids as ignored and delete from Qdrant."""
-    try:
-        data = await request.json()
-        object_ids = data.get("object_ids", [])
-
-        if not object_ids:
-            return {"success": False, "error": "No object IDs provided"}
-
-        ignored_count = 0
-        skipped_ids = []
-        ignored_ids = []
-
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                for oid in object_ids:
-                    # Check if this object has promoted_to_known = true
-                    cur.execute("""
-                        SELECT object_attributes->>'promoted_to_known'
-                        FROM objects WHERE object_id = %s
-                    """, (oid,))
-                    row = cur.fetchone()
-
-                    if row and row[0] == 'true':
-                        skipped_ids.append(oid)
-                        continue
-
-                    cur.execute("""
-                        UPDATE objects
-                        SET object_attributes = object_attributes || '{"display_name": "ignored"}'::jsonb
-                        WHERE object_id = %s
-                    """, (oid,))
-                    ignored_count += 1
-                    ignored_ids.append(oid)
-                conn.commit()
-
-        # Delete ignored objects from Qdrant
-        deleted_qdrant = 0
-        if ignored_ids:
-            deleted_qdrant = delete_objects_from_qdrant(ignored_ids)
-            print(f"[Ignore] Deleted {deleted_qdrant} from Qdrant")
-
-        if skipped_ids:
-            return {
-                "success": True,
-                "updated": ignored_count,
-                "deleted_from_qdrant": deleted_qdrant,
-                "skipped": skipped_ids,
-                "message": f"Ignored {ignored_count} items, deleted from Qdrant. Skipped {len(skipped_ids)} (protected)."
-            }
-
-        return {"success": True, "updated": ignored_count, "deleted_from_qdrant": deleted_qdrant}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@app.delete("/api/delete-visitor/{object_id}")
-async def api_delete_visitor(object_id: int):
-    """Permanently delete a visitor from the database and Qdrant."""
-    try:
-        # Delete from PostgreSQL (events first due to foreign key constraint)
-        deleted_db = 0
-        deleted_events = 0
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Delete related events first
-                cur.execute("DELETE FROM events WHERE object_id = %s", (object_id,))
-                deleted_events = cur.rowcount
-                # Then delete the object
-                cur.execute("DELETE FROM objects WHERE object_id = %s", (object_id,))
-                deleted_db = cur.rowcount
-            conn.commit()
-
-        # Delete from Qdrant
-        deleted_qdrant = delete_objects_from_qdrant([object_id])
-
-        print(f"[Delete] Removed visitor {object_id}: DB={deleted_db}, Events={deleted_events}, Qdrant={deleted_qdrant}")
-
-        if deleted_db == 0:
-            return {"success": False, "error": "Visitor not found in database"}
-
-        return {
-            "success": True,
-            "deleted_from_db": deleted_db,
-            "deleted_events": deleted_events,
-            "deleted_from_qdrant": deleted_qdrant,
-            "message": f"Visitor {object_id} permanently deleted"
-        }
-    except Exception as e:
-        print(f"[Delete] Error: {e}")
-        return {"success": False, "error": str(e)}
-
-
 @app.post("/api/combine")
 async def api_combine(request: Request):
     """
-    Combine remaining cluster faces into the main registered entry.
-    - combine_ids: faces to combine (the remaining ones)
-    - ignore_ids: faces to mark as ignored (the selected ones)
+    Combine selected faces into the main registered visitor entry.
+    - combine_ids: faces to combine with the main visitor
     """
     try:
         data = await request.json()
         registered_object_id = data.get("registered_object_id")
         combine_ids = data.get("combine_ids", [])
-        ignore_ids = data.get("ignore_ids", [])
 
         if not registered_object_id:
             return {"success": False, "error": "registered_object_id is required"}
@@ -1704,54 +1123,15 @@ async def api_combine(request: Request):
         if not combine_ids:
             return {"success": False, "error": "No faces to combine"}
 
-        # First, ignore the selected faces
-        ignored_count = 0
-        if ignore_ids:
-            with get_db_connection() as conn:
-                with conn.cursor() as cur:
-                    for oid in ignore_ids:
-                        cur.execute("""
-                            UPDATE objects
-                            SET object_attributes = object_attributes || '{"display_name": "ignored"}'::jsonb
-                            WHERE object_id = %s
-                        """, (oid,))
-                        ignored_count += 1
-                    conn.commit()
-
-        # Then combine the remaining faces
+        # Combine the selected faces
         result = combine_selected_faces(registered_object_id, combine_ids)
 
         if result.get("success"):
-            result["ignored_count"] = ignored_count
-            result["message"] = f"Combined {result.get('combined_count', 0)} face(s), ignored {ignored_count}"
+            result["message"] = f"Combined {result.get('combined_count', 0)} face(s)"
 
         return result
     except Exception as e:
         return {"success": False, "error": str(e)}
-
-
-@app.post("/api/combine-all")
-async def api_combine_all():
-    """
-    Combine embeddings for ALL registered visitors.
-    Uses InsightFace ArcFace verification before combining.
-    """
-    try:
-        result = combine_all_visitor_embeddings()
-        return {"success": True, **result}
-    except Exception as e:
-        return {"success": False, "error": str(e)}
-
-
-@app.get("/api/insightface-status")
-async def api_insightface_status():
-    """Check if InsightFace is available."""
-    return {
-        "available": INSIGHTFACE_AVAILABLE,
-        "model": "buffalo_s" if INSIGHTFACE_AVAILABLE else None,
-        "qdrant_threshold": COMBINE_QDRANT_THRESHOLD,
-        "arcface_threshold": COMBINE_ARCFACE_THRESHOLD,
-    }
 
 
 if __name__ == "__main__":

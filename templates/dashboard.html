@@ -68,18 +68,6 @@
         .btn-recluster:hover { opacity: 0.9; }
         .btn-recluster:disabled { opacity: 0.5; cursor: wait; }
 
-        /* Toggle switch */
-        .toggle-container { display: flex; align-items: center; gap: 10px; }
-        .toggle-label { font-size: 13px; color: var(--text-secondary); cursor: pointer; user-select: none; }
-        .toggle-switch { position: relative; width: 44px; height: 24px; cursor: pointer; }
-        .toggle-switch input { opacity: 0; width: 0; height: 0; }
-        .toggle-slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 24px; transition: all 0.3s ease; }
-        .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 2px; bottom: 2px; background: var(--text-secondary); border-radius: 50%; transition: all 0.3s ease; }
-        .toggle-switch input:checked + .toggle-slider { background: var(--accent-blue); border-color: var(--accent-blue); }
-        .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); background: white; }
-        .toggle-switch:hover .toggle-slider { border-color: var(--accent-blue); }
-        .toggle-switch input:checked + .toggle-slider:before { box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
-
         /* Progress bar */
         .progress-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 2000; }
         .progress-overlay.show { display: flex; }
@@ -94,6 +82,14 @@
         .clusters-container { flex: 1; padding: 24px; overflow-y: auto; }
         .clusters-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 20px; }
 
+        /* Pagination */
+        .pagination-container { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 20px 24px; border-top: 1px solid var(--border-color); background: var(--bg-sidebar); }
+        .pagination-btn { background: var(--bg-card); color: var(--text-primary); border: 1px solid var(--border-color); padding: 8px 14px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+        .pagination-btn:hover:not(:disabled) { border-color: var(--accent-blue); background: var(--accent-blue); color: white; }
+        .pagination-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+        .pagination-btn.active { background: var(--accent-blue); border-color: var(--accent-blue); color: white; }
+        .pagination-info { color: var(--text-secondary); font-size: 13px; margin: 0 12px; }
+
         /* Initial loading state */
         .loading-container { display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 400px; text-align: center; }
         .loading-spinner { width: 48px; height: 48px; border: 4px solid var(--border-color); border-top-color: var(--accent-blue); border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 24px; }
@@ -101,8 +97,10 @@
         .loading-title { font-size: 20px; font-weight: 600; margin-bottom: 8px; }
         .loading-message { color: var(--text-secondary); font-size: 14px; margin-bottom: 24px; }
         .loading-progress-container { width: 100%; max-width: 400px; }
-        .loading-progress-bg { background: var(--bg-sidebar); height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 12px; }
+        .loading-progress-bg { background: var(--bg-sidebar); height: 8px; border-radius: 4px; overflow: hidden; margin-bottom: 12px; position: relative; }
         .loading-progress-fill { background: linear-gradient(90deg, var(--accent-blue), var(--accent-teal)); height: 100%; border-radius: 4px; transition: width 0.3s ease; width: 0%; }
+        .loading-progress-fill.indeterminate { width: 30%; animation: indeterminate 1.5s ease-in-out infinite; }
+        @keyframes indeterminate { 0% { transform: translateX(-100%); } 100% { transform: translateX(400%); } }
         .loading-percent { font-size: 28px; font-weight: 700; color: var(--accent-blue); }
 
         /* Cluster card */
@@ -110,15 +108,7 @@
         .cluster-card:hover { border-color: var(--accent-blue); }
         .cluster-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-sidebar); }
         .cluster-name { font-size: 14px; font-weight: 500; }
-        .cluster-menu { position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; }
-        .cluster-menu:hover { background: var(--bg-card); }
-        .cluster-menu svg { width: 16px; height: 16px; color: var(--text-secondary); }
-        .cluster-dropdown { position: absolute; top: 100%; right: 0; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; min-width: 150px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 100; display: none; overflow: hidden; }
-        .cluster-dropdown.show { display: block; }
-        .cluster-dropdown-item { padding: 10px 14px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s; }
-        .cluster-dropdown-item:hover { background: var(--bg-sidebar); }
-        .cluster-dropdown-item.danger { color: #dc2626; }
-        .cluster-dropdown-item.danger:hover { background: rgba(220, 38, 38, 0.1); }
+
         .cluster-faces { display: flex; gap: 8px; padding: 12px; overflow-x: auto; }
         .cluster-faces::-webkit-scrollbar { height: 6px; }
         .cluster-faces::-webkit-scrollbar-track { background: var(--bg-sidebar); border-radius: 3px; }
@@ -154,6 +144,7 @@
         .modal-face .check { position: absolute; top: 6px; left: 6px; width: 22px; height: 22px; background: var(--accent-teal); border-radius: 50%; display: none; align-items: center; justify-content: center; pointer-events: none; }
         .modal-face.selected .check { display: flex; }
         .modal-face .check svg { width: 14px; height: 14px; color: white; }
+        .modal-face .similarity-badge { position: absolute; bottom: 4px; right: 4px; background: rgba(0, 0, 0, 0.75); color: #4ade80; font-size: 10px; font-weight: 600; padding: 2px 5px; border-radius: 4px; pointer-events: none; }
         .modal-footer { padding: 16px 20px; border-top: 1px solid var(--border-color); }
         .btn-combine { width: 100%; background: var(--accent-blue); color: white; border: none; padding: 12px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; text-transform: uppercase; letter-spacing: 0.5px; }
         .btn-combine:hover { opacity: 0.9; }
@@ -163,6 +154,9 @@
         .btn-ignore { background: #dc2626; color: white; }
         .btn-ignore:hover { background: #ef4444; }
         .btn-ignore:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-reassign { background: #7c3aed; color: white; }
+        .btn-reassign:hover { background: #8b5cf6; }
+        .btn-reassign:disabled { opacity: 0.5; cursor: not-allowed; }
 
         /* Toast */
         .toast { position: fixed; bottom: 24px; right: 24px; background: var(--bg-card); color: var(--text-primary); padding: 14px 20px; border-radius: 8px; border: 1px solid var(--border-color); box-shadow: 0 8px 32px rgba(0,0,0,0.3); display: none; z-index: 1100; font-size: 14px; }
@@ -240,13 +234,6 @@
                     <span class="stat-label">Total Faces:</span>
                     <span class="stat-value" id="stat-faces">{{ cluster_info.total_points }}</span>
                 </div>
-                <div class="toggle-container">
-                    <span class="toggle-label">Frontal Only</span>
-                    <label class="toggle-switch">
-                        <input type="checkbox" id="frontal-filter" checked onchange="toggleFrontalFilter()">
-                        <span class="toggle-slider"></span>
-                    </label>
-                </div>
                 <button class="btn-recluster" onclick="reloadFaces()" id="refresh-btn">Reload Faces</button>
             </div>
         </div>
@@ -260,10 +247,13 @@
                     <div class="loading-progress-bg">
                         <div class="loading-progress-fill" id="loading-progress-bar" style="width: 0%"></div>
                     </div>
+                    <div class="loading-percent" id="loading-percent">0%</div>
                 </div>
             </div>
             <!-- Grid (hidden until loaded) -->
             <div class="clusters-grid" id="clusters-grid" style="display: none;"></div>
+            <!-- Pagination -->
+            <div class="pagination-container" id="pagination-container" style="display: none;"></div>
         </div>
     </main>
 
@@ -288,12 +278,9 @@
                     <div class="modal-section-title">Detected Instances (<span id="modal-count">0</span> selected)</div>
                     <div class="modal-faces" id="modal-faces"></div>
                 </div>
-                <div class="modal-actions">
-                    <button class="btn-action btn-ignore" id="btn-ignore" onclick="ignoreSelected()" disabled>Ignore Selected</button>
-                </div>
             </div>
             <div class="modal-footer">
-                <button class="btn-combine" id="btn-combine" onclick="combineAll()">COMBINE REMAINING</button>
+                <button class="btn-combine" id="btn-combine" onclick="combineSelected()">COMBINE SELECTED</button>
             </div>
         </div>
     </div>
@@ -318,12 +305,16 @@
         let currentVisitorData = null;
         let selectedIds = new Set();
 
-        // Visitor data - loaded async
+        // Visitor data - loaded async (ALL visitors loaded once)
         let visitorsData = {};
+        let allVisitors = [];  // Array of all visitors for pagination
         let isLoadingFaces = false;
 
-        // Frontal filter state
-        let frontalFilterEnabled = true;
+        // Pagination state (client-side)
+        let currentPage = 1;
+        let pageSize = 20;  // Will be updated from API response
+        let totalPages = 1;
+        let totalVisitors = 0;
 
         // Load faces on page load
         document.addEventListener('DOMContentLoaded', function() {
@@ -337,72 +328,169 @@
             const loadingEl = document.getElementById('initial-loading');
             const gridEl = document.getElementById('clusters-grid');
             const progressBar = document.getElementById('loading-progress-bar');
+            const percentEl = document.getElementById('loading-percent');
             const refreshBtn = document.getElementById('refresh-btn');
+            const paginationEl = document.getElementById('pagination-container');
 
-            // Show loading, hide grid
+            // Show loading with 0% progress
             loadingEl.style.display = 'flex';
             gridEl.style.display = 'none';
+            paginationEl.style.display = 'none';
             if (refreshBtn) refreshBtn.disabled = true;
-            progressBar.style.width = '30%';
+            progressBar.style.width = '0%';
+            percentEl.textContent = '0%';
 
-            try {
-                const sort = document.getElementById('sort-select')?.value || 'similarity';
-                const frontalParam = frontalFilterEnabled ? 'true' : 'false';
-                const response = await fetch(`/api/visitors-data?sort=${sort}&frontal_only=${frontalParam}`);
-                progressBar.style.width = '70%';
+            const sort = document.getElementById('sort-select')?.value || 'similarity';
 
-                const data = await response.json();
+            // Use Server-Sent Events for real progress updates
+            const eventSource = new EventSource(`/api/visitors-data-stream?sort=${sort}&frontal_only=true`);
 
-                // Build visitorsData lookup
-                visitorsData = {};
-                data.visitors.forEach(v => {
-                    visitorsData[v.object_id] = v;
-                });
+            eventSource.onmessage = function(event) {
+                const data = JSON.parse(event.data);
 
-                // Render grid
-                renderVisitorGrid(data.visitors);
-                progressBar.style.width = '100%';
+                if (data.type === 'start') {
+                    // Initial setup - we now know the total
+                    percentEl.textContent = '0%';
+                    progressBar.style.width = '0%';
+                } else if (data.type === 'progress') {
+                    // Update progress bar with REAL percentage
+                    progressBar.style.width = data.percent + '%';
+                    percentEl.textContent = data.percent + '%';
+                } else if (data.type === 'complete') {
+                    // Store ALL visitors
+                    allVisitors = data.visitors;
+                    filteredVisitors = allVisitors;  // Initialize filtered to all
+                    searchQuery = '';  // Reset search
+                    pageSize = data.page_size || 20;
+                    totalVisitors = data.total;
+                    totalPages = Math.ceil(totalVisitors / pageSize);
+                    currentPage = 1;
 
-                // Hide loading, show grid
-                setTimeout(() => {
-                    loadingEl.style.display = 'none';
-                    gridEl.style.display = 'grid';
-                    if (refreshBtn) refreshBtn.disabled = false;
-                    isLoadingFaces = false;
-                }, 200);
+                    // Build visitorsData lookup for modal access
+                    visitorsData = {};
+                    allVisitors.forEach(v => {
+                        visitorsData[v.object_id] = v;
+                    });
 
-            } catch (err) {
-                console.error('Failed to load faces:', err);
+                    // Update stats display
+                    document.getElementById('stat-clusters').textContent = data.total || 0;
+                    document.getElementById('stat-faces').textContent = data.total_faces || 0;
+
+                    // Clear search input
+                    const searchInput = document.getElementById('search-input');
+                    if (searchInput) searchInput.value = '';
+                    const searchBox = document.getElementById('search-box');
+                    if (searchBox) searchBox.classList.remove('has-value');
+
+                    progressBar.style.width = '100%';
+                    percentEl.textContent = '100%';
+
+                    // Render current page
+                    renderCurrentPage();
+
+                    // Hide loading, show grid and pagination
+                    setTimeout(() => {
+                        loadingEl.style.display = 'none';
+                        gridEl.style.display = 'grid';
+                        if (totalPages > 1) paginationEl.style.display = 'flex';
+                        if (refreshBtn) refreshBtn.disabled = false;
+                        isLoadingFaces = false;
+                    }, 200);
+
+                    eventSource.close();
+                }
+            };
+
+            eventSource.onerror = function(err) {
+                console.error('SSE error:', err);
+                eventSource.close();
                 loadingEl.innerHTML = '<div class="loading-title" style="color: #dc2626;">Error loading. Please refresh.</div>';
                 if (refreshBtn) refreshBtn.disabled = false;
                 isLoadingFaces = false;
-            }
+            };
         }
 
-        function toggleFrontalFilter() {
-            frontalFilterEnabled = document.getElementById('frontal-filter').checked;
-            console.log('Frontal filter toggled:', frontalFilterEnabled);
-            // Reload modal faces if modal is open, otherwise reload main grid
-            if (currentVisitorId && document.getElementById('modal-overlay').classList.contains('show')) {
-                loadModalFaces(currentVisitorId);
+        function renderCurrentPage() {
+            // Get visitors for current page (client-side slicing)
+            const startIdx = (currentPage - 1) * pageSize;
+            const endIdx = startIdx + pageSize;
+            const pageVisitors = allVisitors.slice(startIdx, endIdx);
+
+            // Render grid
+            renderVisitorGrid(pageVisitors);
+
+            // Render pagination
+            renderPagination();
+        }
+
+        function renderPagination() {
+            const container = document.getElementById('pagination-container');
+            if (totalPages <= 1) {
+                container.style.display = 'none';
+                return;
+            }
+
+            let html = '';
+
+            // Previous button
+            html += `<button class="pagination-btn" onclick="goToPage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''}>← Prev</button>`;
+
+            // Page numbers
+            const maxButtons = 5;
+            let startPage = Math.max(1, currentPage - Math.floor(maxButtons / 2));
+            let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+
+            if (endPage - startPage + 1 < maxButtons) {
+                startPage = Math.max(1, endPage - maxButtons + 1);
+            }
+
+            if (startPage > 1) {
+                html += `<button class="pagination-btn" onclick="goToPage(1)">1</button>`;
+                if (startPage > 2) html += `<span class="pagination-info">...</span>`;
+            }
+
+            for (let i = startPage; i <= endPage; i++) {
+                html += `<button class="pagination-btn ${i === currentPage ? 'active' : ''}" onclick="goToPage(${i})">${i}</button>`;
+            }
+
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) html += `<span class="pagination-info">...</span>`;
+                html += `<button class="pagination-btn" onclick="goToPage(${totalPages})">${totalPages}</button>`;
+            }
+
+            // Next button
+            html += `<button class="pagination-btn" onclick="goToPage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''}>Next →</button>`;
+
+            // Page info
+            html += `<span class="pagination-info">Page ${currentPage} of ${totalPages} (${totalVisitors} visitors)</span>`;
+
+            container.innerHTML = html;
+            container.style.display = 'flex';
+        }
+
+        function goToPage(page) {
+            if (page < 1 || page > totalPages || page === currentPage) return;
+            currentPage = page;
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            // Use filtered rendering if search is active
+            if (searchQuery) {
+                renderFilteredPage();
             } else {
-                loadFaces();
+                renderCurrentPage();
             }
         }
 
         async function loadModalFaces(visitorId) {
-            const filterParam = frontalFilterEnabled ? '' : '?frontal_only=false';
             document.getElementById('modal-faces').innerHTML = '<div style="color: var(--text-secondary); padding: 20px;">Loading faces...</div>';
 
             try {
-                const response = await fetch(`/api/cluster-images/${visitorId}${filterParam}`);
+                const response = await fetch(`/api/cluster-images/${visitorId}?frontal_only=true`);
                 const data = await response.json();
 
                 // Update section title with count
                 const sectionTitle = document.querySelector('#modal-faces').parentElement.querySelector('.modal-section-title');
                 if (sectionTitle) {
-                    const filterText = frontalFilterEnabled ? 'frontal' : 'all';
-                    sectionTitle.innerHTML = `Detected Instances - ${data.images.length} ${filterText} (<span id="modal-count">0</span> selected)`;
+                    sectionTitle.innerHTML = `Detected Instances - ${data.images.length} (<span id="modal-count">0</span> selected)`;
                 }
 
                 // Store images in currentVisitorData
@@ -414,6 +502,7 @@
                         ? `<div class="modal-face" data-id="${img.id}" onclick="toggleFaceSelection(${img.id})">
                              <img src="${img.path}" alt="Face ${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%231c2128%22 width=%2280%22 height=%2280%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%237d8590%22 font-size=%2212%22>No img</text></svg>'">
                              <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
+                             <div class="similarity-badge">${img.similarity}%</div>
                            </div>`
                         : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`
                 ).join('');
@@ -459,21 +548,6 @@
                 card.innerHTML = `
                     <div class="cluster-header">
                         <span class="cluster-name cluster-title">Visitor: ${visitor.name}${unqualifiedBadge}</span>
-                        <div class="cluster-menu" onclick="event.stopPropagation(); toggleDropdown(event, ${visitor.object_id})">
-                            <svg viewBox="0 0 24 24" fill="currentColor">
-                                <circle cx="12" cy="5" r="2"/>
-                                <circle cx="12" cy="12" r="2"/>
-                                <circle cx="12" cy="19" r="2"/>
-                            </svg>
-                            <div class="cluster-dropdown" id="dropdown-${visitor.object_id}">
-                                <div class="cluster-dropdown-item danger" onclick="event.stopPropagation(); deleteVisitor(${visitor.object_id}, '${visitor.name.replace(/'/g, "\\'")}')">
-                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
-                                        <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
-                                    </svg>
-                                    Delete Visitor
-                                </div>
-                            </div>
-                        </div>
                     </div>
                     <div class="cluster-faces">${facesHtml}</div>
                 `;
@@ -483,83 +557,72 @@
         }
 
         function reloadFaces() {
-            loadFaces();
-        }
-
-        // Dropdown menu functions
-        function toggleDropdown(event, objectId) {
-            event.stopPropagation();
-            // Close all other dropdowns first
-            document.querySelectorAll('.cluster-dropdown.show').forEach(d => d.classList.remove('show'));
-            const dropdown = document.getElementById(`dropdown-${objectId}`);
-            if (dropdown) dropdown.classList.toggle('show');
-        }
-
-        // Close dropdowns when clicking outside
-        document.addEventListener('click', () => {
-            document.querySelectorAll('.cluster-dropdown.show').forEach(d => d.classList.remove('show'));
-        });
-
-        async function deleteVisitor(objectId, visitorName) {
-            if (!confirm(`Are you sure you want to permanently delete "${visitorName}"?\n\nThis will remove the visitor from the database and Qdrant. This action cannot be undone.`)) {
-                return;
-            }
-
-            try {
-                const response = await fetch(`/api/delete-visitor/${objectId}`, { method: 'DELETE' });
-                const data = await response.json();
-
-                if (data.success) {
-                    showToast(`Deleted "${visitorName}" successfully`, 'success');
-                    // Remove the card from the grid
-                    const card = document.querySelector(`.cluster-card[data-visitor-id="${objectId}"]`);
-                    if (card) card.remove();
-                    // Update stats
-                    const statClusters = document.getElementById('stat-clusters');
-                    if (statClusters) statClusters.textContent = parseInt(statClusters.textContent) - 1;
-                } else {
-                    showToast(`Error: ${data.error}`, 'error');
-                }
-            } catch (err) {
-                showToast(`Error: ${err.message}`, 'error');
-            }
+            loadFaces();  // Fresh load from server
         }
 
         let progressPollInterval = null;
 
         // Search/filter functionality
+        let filteredVisitors = [];  // Holds filtered results
+        let searchQuery = '';  // Current search query
+
         function filterVisitors(query) {
             const searchBox = document.getElementById('search-box');
-            const cards = document.querySelectorAll('.cluster-card');
-            const q = query.toLowerCase().trim();
+            searchQuery = query.toLowerCase().trim();
 
             // Toggle clear button visibility
-            if (q) {
+            if (searchQuery) {
                 searchBox.classList.add('has-value');
             } else {
                 searchBox.classList.remove('has-value');
             }
 
-            // Filter cards
-            cards.forEach(card => {
-                const name = card.querySelector('.cluster-title')?.textContent.toLowerCase() || '';
-                if (!q || name.includes(q)) {
-                    card.style.display = '';
-                } else {
-                    card.style.display = 'none';
-                }
-            });
+            // Filter ALL visitors (not just current page)
+            if (searchQuery) {
+                filteredVisitors = allVisitors.filter(v =>
+                    (v.name || '').toLowerCase().includes(searchQuery)
+                );
+            } else {
+                filteredVisitors = allVisitors;
+            }
+
+            // Update pagination for filtered results
+            totalVisitors = filteredVisitors.length;
+            totalPages = Math.ceil(totalVisitors / pageSize) || 1;
+            currentPage = 1;  // Reset to first page
+
+            // Re-render with filtered data
+            renderFilteredPage();
+        }
+
+        function renderFilteredPage() {
+            // Get visitors for current page from filtered results
+            const startIdx = (currentPage - 1) * pageSize;
+            const endIdx = startIdx + pageSize;
+            const pageVisitors = filteredVisitors.slice(startIdx, endIdx);
+
+            // Render grid
+            renderVisitorGrid(pageVisitors);
+
+            // Update pagination
+            renderPagination();
         }
 
         function clearSearch() {
             const input = document.getElementById('search-input');
             input.value = '';
-            filterVisitors('');
+            searchQuery = '';
+            filteredVisitors = allVisitors;
+            totalVisitors = allVisitors.length;
+            totalPages = Math.ceil(totalVisitors / pageSize) || 1;
+            currentPage = 1;
+            renderCurrentPage();
             input.focus();
         }
 
         function changeSort(value) {
-            window.location.href = '/?sort=' + value;
+            // Reload data with new sort order (resets to page 1)
+            loadFaces();
         }
 
         function showProgress(show) {
@@ -672,80 +735,17 @@
         function updateSelectionCount() {
             const count = selectedIds.size;
             document.getElementById('modal-count').textContent = count;
-            document.getElementById('btn-ignore').disabled = count === 0;
-
-            // Combine button: enabled when there are remaining faces (not all selected)
-            const allImages = currentVisitorData?.all_images || currentVisitorData?.similar_images || [];
-            const remainingCount = allImages.length - count;
-            document.getElementById('btn-combine').disabled = remainingCount === 0;
+            document.getElementById('btn-combine').disabled = count === 0;
         }
 
-        async function ignoreSelected() {
+        async function combineSelected() {
             const ids = Array.from(selectedIds);
-            console.log('Ignoring IDs:', ids);
             if (ids.length === 0) {
                 showToast('No faces selected', 'warning');
                 return;
             }
 
-            try {
-                const response = await fetch('/api/ignore', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ object_ids: ids })
-                });
-
-                const result = await response.json();
-                if (result.success) {
-                    showToast(result.message || `Ignored ${result.updated} items`, 'success');
-
-                    // Remove from UI
-                    const skippedSet = new Set(result.skipped || []);
-                    ids.forEach(id => {
-                        if (!skippedSet.has(id)) {
-                            const el = document.querySelector(`#modal-faces .modal-face[data-id="${id}"]`);
-                            if (el) el.remove();
-                            selectedIds.delete(id);
-                            // Also remove from data
-                            if (currentVisitorData.all_images) {
-                                const idx = currentVisitorData.all_images.findIndex(img => img.id === id);
-                                if (idx > -1) currentVisitorData.all_images.splice(idx, 1);
-                            }
-                        }
-                    });
-                    updateSelectionCount();
-                    // Refresh the card in the grid
-                    await refreshVisitorCard(currentVisitorId);
-                } else {
-                    showToast('Error: ' + result.error, 'error');
-                }
-            } catch (err) {
-                showToast('Error: ' + err.message, 'error');
-            }
-        }
-
-        async function combineAll() {
-            // Get all face IDs from the modal (excluding main image)
-            const allImages = currentVisitorData.all_images || currentVisitorData.similar_images || [];
-            const allIds = allImages.map(img => img.id);
-
-            // Remaining = all faces minus selected (selected will be ignored)
-            const remainingIds = allIds.filter(id => !selectedIds.has(id));
-
-            if (remainingIds.length === 0) {
-                showToast('No faces remaining to combine (all selected for ignore)', 'warning');
-                return;
-            }
-
-            const ignoreCount = selectedIds.size;
-            const combineCount = remainingIds.length;
-
-            let confirmMsg = `Combine ${combineCount} face(s) into the main entry?`;
-            if (ignoreCount > 0) {
-                confirmMsg += `\n\n${ignoreCount} selected face(s) will be ignored.`;
-            }
-
-            if (!confirm(confirmMsg)) return;
+            if (!confirm(`Combine ${ids.length} selected face(s) with the main visitor?`)) return;
 
             const btn = document.getElementById('btn-combine');
             btn.disabled = true;
@@ -757,8 +757,7 @@
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         registered_object_id: currentVisitorId,
-                        combine_ids: remainingIds,
-                        ignore_ids: Array.from(selectedIds)
+                        combine_ids: ids
                     })
                 });
 
@@ -769,16 +768,16 @@
                     await loadModalFaces(currentVisitorId);
                     await refreshVisitorCard(currentVisitorId);
                     btn.disabled = false;
-                    btn.textContent = 'COMBINE REMAINING';
+                    btn.textContent = 'COMBINE SELECTED';
                 } else {
                     showToast('Error: ' + result.error, 'error');
                     btn.disabled = false;
-                    btn.textContent = 'COMBINE REMAINING';
+                    btn.textContent = 'COMBINE SELECTED';
                 }
             } catch (err) {
                 showToast('Error: ' + err.message, 'error');
                 btn.disabled = false;
-                btn.textContent = 'COMBINE REMAINING';
+                btn.textContent = 'COMBINE SELECTED';
             }
         }
 
