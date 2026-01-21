@@ -1424,7 +1424,7 @@ async def dashboard(request: Request, sort: str = "similarity"):
     })
 
 @app.get("/api/visitors-data")
-async def api_visitors_data(sort: str = "similarity"):
+async def api_visitors_data(sort: str = "similarity", frontal_only: bool = True):
     """API endpoint to get all visitor data for the dashboard (async loading)."""
     import time
     start_time = time.time()
@@ -1435,7 +1435,7 @@ async def api_visitors_data(sort: str = "similarity"):
     ignored_ids = _get_all_ignored_ids()
     all_image_paths = _get_all_image_paths()
 
-    print(f"[API] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths in {time.time() - start_time:.2f}s")
+    print(f"[API] Loaded {len(ignored_ids)} ignored, {len(all_image_paths)} paths, frontal_only={frontal_only} in {time.time() - start_time:.2f}s")
 
     visitor_data = []
 
@@ -1466,7 +1466,8 @@ async def api_visitors_data(sort: str = "similarity"):
             if not img_path:
                 continue
 
-            if FACE_FILTER_CONFIG.get("enabled", True):
+            # Apply frontal filter based on UI toggle
+            if frontal_only:
                 if not check_frontal(img_path):
                     continue
 
@@ -1528,7 +1529,8 @@ async def api_cluster_images(object_id: int, frontal_only: bool = True):
     all_image_paths = _get_all_image_paths()
 
     images = []
-    frontal_check_enabled = FACE_FILTER_CONFIG.get("enabled", False) and frontal_only
+    # frontal_only parameter from UI takes priority
+    frontal_check_enabled = frontal_only
 
     for pid in similar_ids:
         if pid == object_id:
@@ -1587,7 +1589,7 @@ async def api_refresh_clusters():
 
 @app.post("/api/ignore")
 async def api_ignore(request: Request):
-    """Mark selected object_ids as ignored by setting display_name to 'ignored'."""
+    """Mark selected object_ids as ignored and delete from Qdrant."""
     try:
         data = await request.json()
         object_ids = data.get("object_ids", [])
@@ -1597,6 +1599,7 @@ async def api_ignore(request: Request):
 
         ignored_count = 0
         skipped_ids = []
+        ignored_ids = []
 
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -1618,17 +1621,25 @@ async def api_ignore(request: Request):
                         WHERE object_id = %s
                     """, (oid,))
                     ignored_count += 1
+                    ignored_ids.append(oid)
                 conn.commit()
+
+        # Delete ignored objects from Qdrant
+        deleted_qdrant = 0
+        if ignored_ids:
+            deleted_qdrant = delete_objects_from_qdrant(ignored_ids)
+            print(f"[Ignore] Deleted {deleted_qdrant} from Qdrant")
 
         if skipped_ids:
             return {
                 "success": True,
                 "updated": ignored_count,
+                "deleted_from_qdrant": deleted_qdrant,
                 "skipped": skipped_ids,
-                "message": f"Ignored {ignored_count} items. Skipped {len(skipped_ids)} (protected)."
+                "message": f"Ignored {ignored_count} items, deleted from Qdrant. Skipped {len(skipped_ids)} (protected)."
             }
 
-        return {"success": True, "updated": ignored_count}
+        return {"success": True, "updated": ignored_count, "deleted_from_qdrant": deleted_qdrant}
     except Exception as e:
         return {"success": False, "error": str(e)}
 

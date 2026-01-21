@@ -16,7 +16,7 @@ photos:
 
 # Frontal face filter settings (uses MediaPipe Face Mesh)
 face_filter:
-  enabled: false
+  enabled: true
 
   # MediaPipe Face Mesh head pose settings (values in degrees)
   mediapipe:

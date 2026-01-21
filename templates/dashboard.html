@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Visitor Face Clustering Utility</title>
+    <title>Visitors Face Verification Utility</title>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
         :root {
@@ -67,6 +67,18 @@
         .btn-recluster { background: var(--accent-blue); color: white; border: none; padding: 8px 16px; border-radius: 6px; font-size: 13px; font-weight: 500; cursor: pointer; transition: opacity 0.2s; }
         .btn-recluster:hover { opacity: 0.9; }
         .btn-recluster:disabled { opacity: 0.5; cursor: wait; }
+
+        /* Toggle switch */
+        .toggle-container { display: flex; align-items: center; gap: 10px; }
+        .toggle-label { font-size: 13px; color: var(--text-secondary); cursor: pointer; user-select: none; }
+        .toggle-switch { position: relative; width: 44px; height: 24px; cursor: pointer; }
+        .toggle-switch input { opacity: 0; width: 0; height: 0; }
+        .toggle-slider { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 24px; transition: all 0.3s ease; }
+        .toggle-slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 2px; bottom: 2px; background: var(--text-secondary); border-radius: 50%; transition: all 0.3s ease; }
+        .toggle-switch input:checked + .toggle-slider { background: var(--accent-blue); border-color: var(--accent-blue); }
+        .toggle-switch input:checked + .toggle-slider:before { transform: translateX(20px); background: white; }
+        .toggle-switch:hover .toggle-slider { border-color: var(--accent-blue); }
+        .toggle-switch input:checked + .toggle-slider:before { box-shadow: 0 2px 4px rgba(0,0,0,0.2); }
 
         /* Progress bar */
         .progress-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 2000; }
@@ -167,18 +179,9 @@
                 <circle cx="12" cy="8" r="4"/>
                 <path d="M4 20c0-4 4-6 8-6s8 2 8 6"/>
             </svg>
-            <span>Face Cluster</span>
+            <span>Face Verify</span>
         </div>
         <nav class="sidebar-nav">
-            <div class="nav-item">
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="3" y="3" width="7" height="7" rx="1"/>
-                    <rect x="14" y="3" width="7" height="7" rx="1"/>
-                    <rect x="3" y="14" width="7" height="7" rx="1"/>
-                    <rect x="14" y="14" width="7" height="7" rx="1"/>
-                </svg>
-                <span>Dashboard</span>
-            </div>
             <div class="nav-item active">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="9" cy="7" r="4"/>
@@ -186,7 +189,7 @@
                     <circle cx="17" cy="11" r="3"/>
                     <path d="M21 21v-1a3 3 0 0 0-2-2.8"/>
                 </svg>
-                <span>Review Clusters</span>
+                <span>Review Visitors</span>
             </div>
         </nav>
     </aside>
@@ -195,7 +198,7 @@
     <main class="main-content">
         <!-- Top header -->
         <header class="top-header">
-            <h1>Visitor Face Clustering Utility</h1>
+            <h1>Visitors Face Verification Utility</h1>
             <div class="header-actions">
                 <div class="search-box" id="search-box">
                     <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -220,12 +223,19 @@
             </select>
             <div class="cluster-stats">
                 <div class="stat">
-                    <span class="stat-label">Clusters:</span>
+                    <span class="stat-label">Visitors:</span>
                     <span class="stat-value" id="stat-clusters">{{ cluster_info.n_clusters }}</span>
                 </div>
                 <div class="stat">
                     <span class="stat-label">Total Faces:</span>
                     <span class="stat-value" id="stat-faces">{{ cluster_info.total_points }}</span>
+                </div>
+                <div class="toggle-container">
+                    <span class="toggle-label">Frontal Only</span>
+                    <label class="toggle-switch">
+                        <input type="checkbox" id="frontal-filter" checked onchange="toggleFrontalFilter()">
+                        <span class="toggle-slider"></span>
+                    </label>
                 </div>
                 <button class="btn-recluster" onclick="reloadFaces()" id="refresh-btn">Reload Faces</button>
             </div>
@@ -235,14 +245,11 @@
         <div class="clusters-container">
             <!-- Loading state (shown initially) -->
             <div class="loading-container" id="initial-loading">
-                <div class="loading-spinner"></div>
-                <div class="loading-title">Loading Faces</div>
-                <div class="loading-message" id="loading-message">Fetching visitor data...</div>
+                <div class="loading-title">Loading Visitors...</div>
                 <div class="loading-progress-container">
                     <div class="loading-progress-bg">
                         <div class="loading-progress-fill" id="loading-progress-bar" style="width: 0%"></div>
                     </div>
-                    <div class="loading-percent" id="loading-percent">0%</div>
                 </div>
             </div>
             <!-- Grid (hidden until loaded) -->
@@ -254,7 +261,7 @@
     <div class="modal-overlay" id="modal-overlay">
         <div class="modal">
             <div class="modal-header">
-                <h2 id="modal-title">Cluster: Loading...</h2>
+                <h2 id="modal-title">Visitor: Loading...</h2>
                 <div class="modal-close" onclick="closeModal()">
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                         <line x1="18" y1="6" x2="6" y2="18"/>
@@ -305,6 +312,9 @@
         let visitorsData = {};
         let isLoadingFaces = false;
 
+        // Frontal filter state
+        let frontalFilterEnabled = true;
+
         // Load faces on page load
         document.addEventListener('DOMContentLoaded', function() {
             loadFaces();
@@ -317,26 +327,19 @@
             const loadingEl = document.getElementById('initial-loading');
             const gridEl = document.getElementById('clusters-grid');
             const progressBar = document.getElementById('loading-progress-bar');
-            const progressPercent = document.getElementById('loading-percent');
-            const loadingMessage = document.getElementById('loading-message');
             const refreshBtn = document.getElementById('refresh-btn');
 
             // Show loading, hide grid
             loadingEl.style.display = 'flex';
             gridEl.style.display = 'none';
             if (refreshBtn) refreshBtn.disabled = true;
-
-            // Animate progress bar to show activity
-            progressBar.style.width = '20%';
-            progressPercent.textContent = 'Loading...';
-            loadingMessage.textContent = 'Fetching visitor data...';
+            progressBar.style.width = '30%';
 
             try {
                 const sort = document.getElementById('sort-select')?.value || 'similarity';
-                const response = await fetch(`/api/visitors-data?sort=${sort}`);
-
-                progressBar.style.width = '80%';
-                loadingMessage.textContent = 'Rendering faces...';
+                const frontalParam = frontalFilterEnabled ? 'true' : 'false';
+                const response = await fetch(`/api/visitors-data?sort=${sort}&frontal_only=${frontalParam}`);
+                progressBar.style.width = '70%';
 
                 const data = await response.json();
 
@@ -348,9 +351,7 @@
 
                 // Render grid
                 renderVisitorGrid(data.visitors);
-
                 progressBar.style.width = '100%';
-                progressPercent.textContent = 'Done!';
 
                 // Hide loading, show grid
                 setTimeout(() => {
@@ -358,15 +359,58 @@
                     gridEl.style.display = 'grid';
                     if (refreshBtn) refreshBtn.disabled = false;
                     isLoadingFaces = false;
-                }, 300);
+                }, 200);
 
             } catch (err) {
                 console.error('Failed to load faces:', err);
-                loadingMessage.textContent = 'Error loading faces. Please refresh.';
-                progressBar.style.width = '0%';
-                progressPercent.textContent = 'Error';
+                loadingEl.innerHTML = '<div class="loading-title" style="color: #dc2626;">Error loading. Please refresh.</div>';
                 if (refreshBtn) refreshBtn.disabled = false;
                 isLoadingFaces = false;
+            }
+        }
+
+        function toggleFrontalFilter() {
+            frontalFilterEnabled = document.getElementById('frontal-filter').checked;
+            console.log('Frontal filter toggled:', frontalFilterEnabled);
+            // Reload modal faces if modal is open, otherwise reload main grid
+            if (currentVisitorId && document.getElementById('modal-overlay').classList.contains('show')) {
+                loadModalFaces(currentVisitorId);
+            } else {
+                loadFaces();
+            }
+        }
+
+        async function loadModalFaces(visitorId) {
+            const filterParam = frontalFilterEnabled ? '' : '?frontal_only=false';
+            document.getElementById('modal-faces').innerHTML = '<div style="color: var(--text-secondary); padding: 20px;">Loading faces...</div>';
+
+            try {
+                const response = await fetch(`/api/cluster-images/${visitorId}${filterParam}`);
+                const data = await response.json();
+
+                // Update section title with count
+                const sectionTitle = document.querySelector('#modal-faces').parentElement.querySelector('.modal-section-title');
+                if (sectionTitle) {
+                    const filterText = frontalFilterEnabled ? 'frontal' : 'all';
+                    sectionTitle.innerHTML = `Detected Instances - ${data.images.length} ${filterText} (<span id="modal-count">0</span> selected)`;
+                }
+
+                // Store images in currentVisitorData
+                currentVisitorData.all_images = data.images;
+                selectedIds.clear();
+
+                const facesHtml = data.images.map(img =>
+                    img.path
+                        ? `<div class="modal-face" data-id="${img.id}" onclick="toggleFaceSelection(${img.id})">
+                             <img src="${img.path}" alt="Face ${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%231c2128%22 width=%2280%22 height=%2280%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%237d8590%22 font-size=%2212%22>No img</text></svg>'">
+                             <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
+                           </div>`
+                        : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`
+                ).join('');
+                document.getElementById('modal-faces').innerHTML = facesHtml || '<div style="color: var(--text-secondary);">No similar faces found</div>';
+                updateSelectionCount();
+            } catch (err) {
+                document.getElementById('modal-faces').innerHTML = '<div style="color: #dc2626;">Error: ' + err.message + '</div>';
             }
         }
 
@@ -400,7 +444,7 @@
 
                 card.innerHTML = `
                     <div class="cluster-header">
-                        <span class="cluster-name cluster-title">Cluster: ${visitor.name}</span>
+                        <span class="cluster-name cluster-title">Visitor: ${visitor.name}</span>
                         <div class="cluster-menu" onclick="event.stopPropagation()">
                             <svg viewBox="0 0 24 24" fill="currentColor">
                                 <circle cx="12" cy="5" r="2"/>
@@ -523,7 +567,7 @@
             // Set title
             const isRegistered = !currentVisitorData.name.startsWith('unknown/');
             document.getElementById('modal-title').textContent =
-                `Cluster: ${currentVisitorData.name}${isRegistered ? ' (Registered)' : ''}`;
+                `Visitor: ${currentVisitorData.name}${isRegistered ? ' (Registered)' : ''}`;
 
             // Set main face
             const mainFaceHtml = currentVisitorData.main_image
@@ -534,39 +578,9 @@
                 : '<div class="face-placeholder" style="width:80px;height:80px">No image</div>';
             document.getElementById('modal-main-face').innerHTML = mainFaceHtml;
 
-            // Show loading state
-            document.getElementById('modal-faces').innerHTML = '<div style="color: var(--text-secondary); padding: 20px;">Loading all faces (with frontal filter)...</div>';
+            // Show modal and load faces
             document.getElementById('modal-overlay').classList.add('show');
-
-            // Fetch ALL cluster images from API (with frontal filter)
-            try {
-                const response = await fetch(`/api/cluster-images/${currentVisitorData.object_id}`);
-                const data = await response.json();
-
-                // Update modal-section-title with count (preserve the span for selection count)
-                const sectionTitle = document.querySelector('#modal-faces').previousElementSibling;
-                if (sectionTitle && sectionTitle.classList.contains('modal-section-title')) {
-                    sectionTitle.innerHTML = `DETECTED FACES (${data.images.length} ${data.frontal_filter_enabled ? 'frontal' : 'total'}) - <span id="modal-count">0</span> selected`;
-                }
-
-                // Store images in currentVisitorData for later use
-                currentVisitorData.all_images = data.images;
-
-                const facesHtml = data.images.map(img =>
-                    img.path
-                        ? `<div class="modal-face" data-id="${img.id}" onclick="toggleFaceSelection(${img.id})">
-                             <img src="${img.path}" alt="Face ${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%231c2128%22 width=%2280%22 height=%2280%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%237d8590%22 font-size=%2212%22>No img</text></svg>'">
-                             <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
-                           </div>`
-                        : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`
-                ).join('');
-                document.getElementById('modal-faces').innerHTML = facesHtml || '<div style="color: var(--text-secondary);">No similar faces found</div>';
-
-                // Update button states now that we have images
-                updateSelectionCount();
-            } catch (err) {
-                document.getElementById('modal-faces').innerHTML = '<div style="color: #dc2626;">Error loading faces: ' + err.message + '</div>';
-            }
+            await loadModalFaces(visitorId);
         }
 
         function closeModal() {
@@ -631,18 +645,16 @@
                             const el = document.querySelector(`#modal-faces .modal-face[data-id="${id}"]`);
                             if (el) el.remove();
                             selectedIds.delete(id);
-                            // Also remove from data (check both arrays)
+                            // Also remove from data
                             if (currentVisitorData.all_images) {
                                 const idx = currentVisitorData.all_images.findIndex(img => img.id === id);
                                 if (idx > -1) currentVisitorData.all_images.splice(idx, 1);
                             }
-                            if (currentVisitorData.similar_images) {
-                                const idx = currentVisitorData.similar_images.findIndex(img => img.id === id);
-                                if (idx > -1) currentVisitorData.similar_images.splice(idx, 1);
-                            }
                         }
                     });
                     updateSelectionCount();
+                    // Refresh the card in the grid
+                    await refreshVisitorCard(currentVisitorId);
                 } else {
                     showToast('Error: ' + result.error, 'error');
                 }
@@ -692,8 +704,11 @@
                 const result = await response.json();
                 if (result.success) {
                     showToast(result.message, 'success');
-                    closeModal();
-                    setTimeout(() => reloadFaces(), 1000);
+                    // Reload modal faces and update the card in grid
+                    await loadModalFaces(currentVisitorId);
+                    await refreshVisitorCard(currentVisitorId);
+                    btn.disabled = false;
+                    btn.textContent = 'COMBINE REMAINING';
                 } else {
                     showToast('Error: ' + result.error, 'error');
                     btn.disabled = false;
@@ -703,6 +718,48 @@
                 showToast('Error: ' + err.message, 'error');
                 btn.disabled = false;
                 btn.textContent = 'COMBINE REMAINING';
+            }
+        }
+
+        async function refreshVisitorCard(visitorId) {
+            // Fetch fresh data for this visitor and update the card
+            try {
+                const response = await fetch(`/api/cluster-images/${visitorId}`);
+                const data = await response.json();
+
+                // Update visitorsData
+                if (visitorsData[visitorId]) {
+                    visitorsData[visitorId].similar_images = data.images.slice(0, 5);
+                    visitorsData[visitorId].similar_count = data.images.length;
+                }
+
+                // Update the card in the grid
+                const card = document.querySelector(`.cluster-card[data-visitor-id="${visitorId}"]`);
+                if (card) {
+                    let facesHtml = '';
+                    const mainImg = visitorsData[visitorId]?.main_image;
+                    if (mainImg) {
+                        facesHtml += `<img src="${mainImg}" alt="Main" class="face-thumb main" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">`;
+                    }
+
+                    const previewImages = data.images.slice(0, 4);
+                    previewImages.forEach(img => {
+                        if (img.path) {
+                            facesHtml += `<img src="${img.path}" alt="Face" class="face-thumb" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">`;
+                        }
+                    });
+
+                    if (data.images.length > 4) {
+                        facesHtml += `<div class="more-faces">+${data.images.length - 4}</div>`;
+                    }
+
+                    const facesContainer = card.querySelector('.cluster-faces');
+                    if (facesContainer) {
+                        facesContainer.innerHTML = facesHtml;
+                    }
+                }
+            } catch (err) {
+                console.error('Failed to refresh card:', err);
             }
         }
 
