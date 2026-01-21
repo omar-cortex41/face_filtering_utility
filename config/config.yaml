@@ -20,8 +20,8 @@ face_filter:
 
   # MediaPipe Face Mesh head pose settings (values in degrees)
   mediapipe:
-    yaw_max: 30                      # Max head turn left/right (degrees) - relaxed for office cams
-    pitch_max: 25                    # Max head tilt up/down (degrees) - relaxed for office cams
+    yaw_max: 40                      # Max head turn left/right (degrees) - relaxed for office cams
+    pitch_max: 35                    # Max head tilt up/down (degrees) - relaxed for office cams
     min_detection_confidence: 0.5    # Face detection confidence threshold
 
   # Quality filter
@@ -30,4 +30,4 @@ face_filter:
 # Similarity search settings (Qdrant cosine similarity)
 # InsightFace 512D embeddings: same person ~0.4-0.7, different person ~0.1-0.3
 similarity:
-  threshold: 0.28
+  threshold: 0.29

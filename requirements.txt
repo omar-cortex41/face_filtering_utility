@@ -12,9 +12,15 @@ scikit-learn
 qdrant-client
 
 # Computer vision
-opencv-python
-mediapipe
+opencv-python-headless
+mediapipe==0.10.9
+
+# AdaFace face recognition
+torch
+torchvision
+pillow
+tqdm
+pytorch_lightning
 
 # Configuration
 pyyaml
-

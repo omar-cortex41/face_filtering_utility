@@ -110,9 +110,15 @@
         .cluster-card:hover { border-color: var(--accent-blue); }
         .cluster-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: var(--bg-sidebar); }
         .cluster-name { font-size: 14px; font-weight: 500; }
-        .cluster-menu { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; }
+        .cluster-menu { position: relative; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; cursor: pointer; border-radius: 4px; }
         .cluster-menu:hover { background: var(--bg-card); }
         .cluster-menu svg { width: 16px; height: 16px; color: var(--text-secondary); }
+        .cluster-dropdown { position: absolute; top: 100%; right: 0; background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; min-width: 150px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); z-index: 100; display: none; overflow: hidden; }
+        .cluster-dropdown.show { display: block; }
+        .cluster-dropdown-item { padding: 10px 14px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: background 0.15s; }
+        .cluster-dropdown-item:hover { background: var(--bg-sidebar); }
+        .cluster-dropdown-item.danger { color: #dc2626; }
+        .cluster-dropdown-item.danger:hover { background: rgba(220, 38, 38, 0.1); }
         .cluster-faces { display: flex; gap: 8px; padding: 12px; overflow-x: auto; }
         .cluster-faces::-webkit-scrollbar { height: 6px; }
         .cluster-faces::-webkit-scrollbar-track { background: var(--bg-sidebar); border-radius: 3px; }
@@ -120,8 +126,12 @@
         .face-thumb { width: 70px; height: 70px; border-radius: 8px; object-fit: cover; flex-shrink: 0; border: 2px solid transparent; transition: border-color 0.2s; }
         .face-thumb:hover { border-color: var(--accent-blue); }
         .face-thumb.main { border-color: var(--accent-teal); }
+        .face-thumb.unqualified { border-color: #dc2626; }
         .face-placeholder { width: 70px; height: 70px; border-radius: 8px; background: var(--bg-sidebar); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 11px; flex-shrink: 0; }
         .more-faces { width: 70px; height: 70px; border-radius: 8px; background: var(--bg-sidebar); display: flex; align-items: center; justify-content: center; color: var(--text-secondary); font-size: 13px; font-weight: 500; flex-shrink: 0; }
+
+        /* Unqualified badge */
+        .unqualified-badge { background: #dc2626; color: white; font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 4px; margin-left: 8px; text-transform: uppercase; letter-spacing: 0.5px; }
 
         /* Modal overlay */
         .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: none; align-items: center; justify-content: center; z-index: 1000; }
@@ -424,9 +434,13 @@
                 card.dataset.visitorId = visitor.object_id;
                 card.onclick = () => openClusterModal(visitor.object_id);
 
+                const isQualified = visitor.main_image_qualified !== false;
+                const mainImgClass = isQualified ? 'face-thumb main' : 'face-thumb main unqualified';
+                const unqualifiedBadge = isQualified ? '' : '<span class="unqualified-badge">Image Unqualified</span>';
+
                 let facesHtml = '';
                 if (visitor.main_image) {
-                    facesHtml += `<img src="${visitor.main_image}" alt="${visitor.name}" class="face-thumb main" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">`;
+                    facesHtml += `<img src="${visitor.main_image}" alt="${visitor.name}" class="${mainImgClass}" loading="lazy" onerror="this.outerHTML='<div class=face-placeholder>No img</div>'">`;
                 }
 
                 const previewImages = visitor.similar_images.slice(0, 4);
@@ -444,13 +458,21 @@
 
                 card.innerHTML = `
                     <div class="cluster-header">
-                        <span class="cluster-name cluster-title">Visitor: ${visitor.name}</span>
-                        <div class="cluster-menu" onclick="event.stopPropagation()">
+                        <span class="cluster-name cluster-title">Visitor: ${visitor.name}${unqualifiedBadge}</span>
+                        <div class="cluster-menu" onclick="event.stopPropagation(); toggleDropdown(event, ${visitor.object_id})">
                             <svg viewBox="0 0 24 24" fill="currentColor">
                                 <circle cx="12" cy="5" r="2"/>
                                 <circle cx="12" cy="12" r="2"/>
                                 <circle cx="12" cy="19" r="2"/>
                             </svg>
+                            <div class="cluster-dropdown" id="dropdown-${visitor.object_id}">
+                                <div class="cluster-dropdown-item danger" onclick="event.stopPropagation(); deleteVisitor(${visitor.object_id}, '${visitor.name.replace(/'/g, "\\'")}')">
+                                    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/>
+                                    </svg>
+                                    Delete Visitor
+                                </div>
+                            </div>
                         </div>
                     </div>
                     <div class="cluster-faces">${facesHtml}</div>
@@ -462,6 +484,45 @@
 
         function reloadFaces() {
             loadFaces();
+        }
+
+        // Dropdown menu functions
+        function toggleDropdown(event, objectId) {
+            event.stopPropagation();
+            // Close all other dropdowns first
+            document.querySelectorAll('.cluster-dropdown.show').forEach(d => d.classList.remove('show'));
+            const dropdown = document.getElementById(`dropdown-${objectId}`);
+            if (dropdown) dropdown.classList.toggle('show');
+        }
+
+        // Close dropdowns when clicking outside
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.cluster-dropdown.show').forEach(d => d.classList.remove('show'));
+        });
+
+        async function deleteVisitor(objectId, visitorName) {
+            if (!confirm(`Are you sure you want to permanently delete "${visitorName}"?\n\nThis will remove the visitor from the database and Qdrant. This action cannot be undone.`)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/delete-visitor/${objectId}`, { method: 'DELETE' });
+                const data = await response.json();
+
+                if (data.success) {
+                    showToast(`Deleted "${visitorName}" successfully`, 'success');
+                    // Remove the card from the grid
+                    const card = document.querySelector(`.cluster-card[data-visitor-id="${objectId}"]`);
+                    if (card) card.remove();
+                    // Update stats
+                    const statClusters = document.getElementById('stat-clusters');
+                    if (statClusters) statClusters.textContent = parseInt(statClusters.textContent) - 1;
+                } else {
+                    showToast(`Error: ${data.error}`, 'error');
+                }
+            } catch (err) {
+                showToast(`Error: ${err.message}`, 'error');
+            }
         }
 
         let progressPollInterval = null;
