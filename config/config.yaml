@@ -34,4 +34,4 @@ similarity:
 
 # UI settings
 ui:
-  page_size: 20  # Number of visitors per page in the dashboard
+  page_size: 12  # Number of visitors per page in the dashboard

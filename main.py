@@ -1106,6 +1106,43 @@ async def api_refresh_clusters():
         return {"success": False, "message": "Clustering already in progress"}
 
 
+@app.delete("/api/delete-visitor/{object_id}")
+async def api_delete_visitor(object_id: int):
+    """Permanently delete a visitor from the database and Qdrant."""
+    try:
+        # Delete from PostgreSQL (events first due to foreign key constraint)
+        deleted_db = 0
+        deleted_events = 0
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                # Delete related events first
+                cur.execute("DELETE FROM events WHERE object_id = %s", (object_id,))
+                deleted_events = cur.rowcount
+                # Then delete the object
+                cur.execute("DELETE FROM objects WHERE object_id = %s", (object_id,))
+                deleted_db = cur.rowcount
+            conn.commit()
+
+        # Delete from Qdrant
+        deleted_qdrant = delete_objects_from_qdrant([object_id])
+
+        print(f"[Delete] Removed visitor {object_id}: DB={deleted_db}, Events={deleted_events}, Qdrant={deleted_qdrant}")
+
+        if deleted_db == 0:
+            return {"success": False, "error": "Visitor not found in database"}
+
+        return {
+            "success": True,
+            "deleted_from_db": deleted_db,
+            "deleted_events": deleted_events,
+            "deleted_from_qdrant": deleted_qdrant,
+            "message": f"Visitor {object_id} permanently deleted"
+        }
+    except Exception as e:
+        print(f"[Delete] Error: {e}")
+        return {"success": False, "error": str(e)}
+
+
 @app.post("/api/combine")
 async def api_combine(request: Request):
     """
