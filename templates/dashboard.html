@@ -207,7 +207,9 @@
         .modal-close svg { width: 20px; height: 20px; color: var(--text-secondary); }
         .modal-body { padding: 24px; overflow-y: auto; flex: 1; }
         .modal-section { margin-bottom: 24px; }
-        .modal-section-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.5px; }
+        .modal-section-title { font-size: 13px; color: var(--text-secondary); margin-bottom: 14px; text-transform: uppercase; letter-spacing: 0.5px; display: flex; align-items: center; justify-content: space-between; }
+        .select-all-link { color: var(--accent-blue); cursor: pointer; font-size: 11px; text-transform: none; letter-spacing: normal; }
+        .select-all-link:hover { text-decoration: underline; }
         .modal-faces { display: flex; flex-wrap: wrap; gap: 12px; }
         .modal-face { position: relative; cursor: pointer; }
         .modal-face img { width: 100px; height: 100px; border-radius: 10px; object-fit: cover; border: 3px solid transparent; transition: all 0.2s; pointer-events: none; }
@@ -311,7 +313,7 @@
         <div class="controls-bar">
             <span class="label">Sort by:</span>
             <select class="dropdown" id="sort-select" onchange="changeSort(this.value)">
-                <option value="similarity" {% if current_sort == 'similarity' %}selected{% endif %}>Cluster Size</option>
+                <option value="similarity" {% if current_sort == 'similarity' %}selected{% endif %}>Faces Count</option>
                 <option value="alphabetic" {% if current_sort == 'alphabetic' %}selected{% endif %}>Alphabetic</option>
             </select>
             <div class="cluster-stats">
@@ -364,7 +366,10 @@
                     <div class="modal-faces" id="modal-main-face"></div>
                 </div>
                 <div class="modal-section">
-                    <div class="modal-section-title">Detected Instances (<span id="modal-count">0</span> selected)</div>
+                    <div class="modal-section-title">
+                        <span>Detected Instances (<span id="modal-count">0</span> selected)</span>
+                        <span class="select-all-link" id="select-all-link" onclick="selectAllFaces()">Select All</span>
+                    </div>
                     <div class="modal-faces" id="modal-faces"></div>
                 </div>
             </div>
@@ -404,6 +409,7 @@
         let pageSize = 20;  // Will be updated from API response
         let totalPages = 1;
         let totalVisitors = 0;
+        let autoSelectThreshold = 25;  // Will be updated from API response
 
         // Load faces on page load
         document.addEventListener('DOMContentLoaded', function() {
@@ -451,6 +457,7 @@
                     filteredVisitors = allVisitors;  // Initialize filtered to all
                     searchQuery = '';  // Reset search
                     pageSize = data.page_size || 20;
+                    autoSelectThreshold = data.auto_select_threshold || 25;
                     totalVisitors = data.total;
                     totalPages = Math.ceil(totalVisitors / pageSize);
                     currentPage = 1;
@@ -610,25 +617,33 @@
                 const response = await fetch(`/api/cluster-images/${visitorId}?frontal_only=true`);
                 const data = await response.json();
 
-                // Update section title with count
+                // Update section title with count and Select All link
                 const sectionTitle = document.querySelector('#modal-faces').parentElement.querySelector('.modal-section-title');
                 if (sectionTitle) {
-                    sectionTitle.innerHTML = `Detected Instances - ${data.images.length} (<span id="modal-count">0</span> selected)`;
+                    sectionTitle.innerHTML = `<span>Detected Instances - ${data.images.length} (<span id="modal-count">0</span> selected)</span><span class="select-all-link" id="select-all-link" onclick="selectAllFaces()">Select All</span>`;
                 }
 
                 // Store images in currentVisitorData
                 currentVisitorData.all_images = data.images;
                 selectedIds.clear();
 
-                const facesHtml = data.images.map(img =>
-                    img.path
-                        ? `<div class="modal-face" data-id="${img.id}" onclick="toggleFaceSelection(${img.id})">
+                // Auto-select images with similarity above threshold (from config)
+                data.images.forEach(img => {
+                    if (img.similarity >= autoSelectThreshold) {
+                        selectedIds.add(img.id);
+                    }
+                });
+
+                const facesHtml = data.images.map(img => {
+                    const isSelected = selectedIds.has(img.id);
+                    return img.path
+                        ? `<div class="modal-face${isSelected ? ' selected' : ''}" data-id="${img.id}" onclick="toggleFaceSelection(${img.id})">
                              <img src="${img.path}" alt="Face ${img.id}" loading="lazy" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22><rect fill=%22%231c2128%22 width=%2280%22 height=%2280%22/><text x=%2240%22 y=%2245%22 text-anchor=%22middle%22 fill=%22%237d8590%22 font-size=%2212%22>No img</text></svg>'">
                              <div class="check"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg></div>
                              <div class="similarity-badge">${img.similarity}%</div>
                            </div>`
-                        : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`
-                ).join('');
+                        : `<div class="face-placeholder" style="width:80px;height:80px">ID: ${img.id}</div>`;
+                }).join('');
                 document.getElementById('modal-faces').innerHTML = facesHtml || '<div style="color: var(--text-secondary);">No similar faces found</div>';
                 updateSelectionCount();
             } catch (err) {
@@ -916,6 +931,37 @@
             const count = selectedIds.size;
             document.getElementById('modal-count').textContent = count;
             document.getElementById('btn-combine').disabled = count === 0;
+
+            // Update Select All link text
+            const selectAllLink = document.getElementById('select-all-link');
+            if (selectAllLink && currentVisitorData.all_images) {
+                const allSelected = selectedIds.size === currentVisitorData.all_images.length && currentVisitorData.all_images.length > 0;
+                selectAllLink.textContent = allSelected ? 'Deselect All' : 'Select All';
+            }
+        }
+
+        function selectAllFaces() {
+            if (!currentVisitorData.all_images || currentVisitorData.all_images.length === 0) return;
+
+            const allSelected = selectedIds.size === currentVisitorData.all_images.length;
+
+            if (allSelected) {
+                // Deselect all
+                selectedIds.clear();
+                document.querySelectorAll('#modal-faces .modal-face').forEach(el => {
+                    el.classList.remove('selected');
+                });
+            } else {
+                // Select all
+                currentVisitorData.all_images.forEach(img => {
+                    selectedIds.add(img.id);
+                });
+                document.querySelectorAll('#modal-faces .modal-face').forEach(el => {
+                    el.classList.add('selected');
+                });
+            }
+
+            updateSelectionCount();
         }
 
         async function combineSelected() {

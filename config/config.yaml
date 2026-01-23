@@ -35,3 +35,4 @@ similarity:
 # UI settings
 ui:
   page_size: 12  # Number of visitors per page in the dashboard
+  auto_select_threshold: 30  # Auto-select faces with similarity >= this percentage when opening modal

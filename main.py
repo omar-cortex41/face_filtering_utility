@@ -71,6 +71,7 @@ FACE_FILTER_CONFIG = config.get("face_filter", {})
 CLUSTERING_CONFIG = config.get("clustering", {})
 UI_CONFIG = config.get("ui", {})
 PAGE_SIZE = int(UI_CONFIG.get("page_size", 20))
+AUTO_SELECT_THRESHOLD = int(UI_CONFIG.get("auto_select_threshold", 25))
 
 
 def get_db_connection():
@@ -999,7 +1000,7 @@ async def api_visitors_data_stream(sort: str = "similarity", frontal_only: bool 
             total_faces = 0
 
         # Send final data
-        yield f"data: {json.dumps({'type': 'complete', 'visitors': visitor_data, 'total': len(visitor_data), 'total_faces': total_faces, 'page_size': PAGE_SIZE, 'auto_deleted_count': deleted_count})}\n\n"
+        yield f"data: {json.dumps({'type': 'complete', 'visitors': visitor_data, 'total': len(visitor_data), 'total_faces': total_faces, 'page_size': PAGE_SIZE, 'auto_select_threshold': AUTO_SELECT_THRESHOLD, 'auto_deleted_count': deleted_count})}\n\n"
 
     return StreamingResponse(generate(), media_type="text/event-stream")
 
